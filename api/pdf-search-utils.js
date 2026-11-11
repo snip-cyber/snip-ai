@@ -229,6 +229,139 @@ if (!periods.length) for (const year of years) periods.push(year);
 return periods;
 }
 
+
+export function extractFinancialRowsFromItems(items, page, indexOffset = 0) {
+  const lines = extractPageLines(items);
+  const rows = extractFinancialRows(lines.join("\n"), page, indexOffset);
+  if (!rows.length) return rows;
+
+  const positioned = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const text = cleanLine(item?.str);
+    const x = Number(item?.transform?.[4]);
+    const y = Number(item?.transform?.[5]);
+    if (!text || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+    let line = positioned.find(candidate => Math.abs(candidate.y - y) < 1.5);
+    if (!line) {
+      line = { y, items: [] };
+      positioned.push(line);
+    }
+    line.items.push({ x, width: Number(item.width) || 0, text });
+  }
+
+  for (const line of positioned) {
+    line.items.sort((a, b) => a.x - b.x);
+    line.text = line.items.map(item => item.text).join(" ");
+  }
+
+  for (const row of rows) {
+    const labelLine = positioned.find(line =>
+      normalized(line.text).includes(row.label)
+    );
+    if (!labelLine) continue;
+
+    const labelItem = labelLine.items.find(item =>
+      normalized(item.text).includes(row.label)
+    );
+    if (!labelItem) continue;
+
+    const headingLine = positioned.find(line =>
+      /\b(?:consolidated|group|company|parent company)\s+(?:statement of financial position|balance sheet)\b/i.test(line.text)
+    );
+    if (!headingLine || headingLine.y <= labelLine.y) continue;
+
+    const headerItems = positioned
+      .filter(line => line.y > labelLine.y && line.y < headingLine.y)
+      .flatMap(line => line.items);
+
+    const datePattern = new RegExp(
+      `\\b\\d{1,2}\\s+${MONTH_PATTERN}\\b`, "i"
+    );
+    const dates = headerItems.filter(item => datePattern.test(item.text));
+    const years = headerItems.filter(item => /\b20\d{2}\b/.test(item.text));
+
+    const columns = [];
+    const usedYears = new Set();
+
+    for (const date of dates) {
+      const yearMatches = years
+        .map((year, index) => ({
+          year,
+          index,
+          distance: Math.abs(year.x - date.x)
+        }))
+        .filter(entry => !usedYears.has(entry.index))
+        .sort((a, b) => a.distance - b.distance);
+
+      if (!yearMatches.length || yearMatches[0].distance > 60) continue;
+
+      const match = yearMatches[0];
+      usedYears.add(match.index);
+      const year = match.year.text.match(/\b20\d{2}\b/)[0];
+      const dateText = date.text.match(datePattern)[0];
+
+      columns.push({
+        x: (date.x + match.year.x) / 2,
+        period: `${dateText} ${year}`
+      });
+    }
+
+    const numericItems = labelLine.items.filter(item => {
+      if (item.x <= labelItem.x + labelItem.width) return false;
+      const value = item.text.replace(/\s+/g, "");
+      return /^(?:\(?-?\d[\d,]*(?:\.\d+)?\)?|[—–-])$/.test(value);
+    });
+
+    const valueGroups = [];
+    for (const item of numericItems) {
+      const previous = valueGroups[valueGroups.length - 1];
+      if (previous && item.x - (previous.lastX + previous.lastWidth) <= 10) {
+        previous.parts.push(item.text);
+        previous.lastX = item.x;
+        previous.lastWidth = item.width;
+      } else {
+        valueGroups.push({
+          x: item.x,
+          lastX: item.x,
+          lastWidth: item.width,
+          parts: [item.text]
+        });
+      }
+    }
+
+    const usedValues = new Set();
+    const aligned = [];
+
+    for (const column of columns.sort((a, b) => a.x - b.x)) {
+      const matches = valueGroups
+        .map((group, index) => ({
+          group,
+          index,
+          distance: Math.abs(group.x - column.x)
+        }))
+        .filter(entry => !usedValues.has(entry.index))
+        .sort((a, b) => a.distance - b.distance);
+
+      if (!matches.length || matches[0].distance > 60) continue;
+
+      const match = matches[0];
+      usedValues.add(match.index);
+      const value = match.group.parts.join("")
+        .replace(/(\d)\s*\.\s*(\d)/g, "$1.$2");
+
+      aligned.push({ period: column.period, value });
+    }
+
+    if (aligned.length) {
+      row.coordinatePeriods = aligned.map(item => item.period);
+      row.coordinateValues = aligned.map(item => item.value);
+    }
+  }
+
+  return rows;
+}
+
 export function extractFinancialRows(pageText, page, indexOffset = 0) {
 const lines = String(pageText || "")
 .split(/\n+/)
@@ -343,13 +476,18 @@ const preferredSection = wantsCompany
 const preferred = candidates.filter(row => row.section === preferredSection);
 let ranked = preferred.length ? preferred : candidates;
 
+const periodsForRow = row =>
+  Array.isArray(row.coordinatePeriods) &&
+  row.coordinatePeriods.length > 0 &&
+  row.coordinatePeriods.length === row.coordinateValues?.length
+    ? row.coordinatePeriods
+    : periodsFromHeader(row.periodContext);
+
 const year = requestedYear(question);
 
 if (year) {
 const matchingYear = ranked.filter(row =>
-periodsFromHeader(row.periodContext).some(period =>
-period.includes(year)
-)
+periodsForRow(row).some(period => period.includes(year))
 );
 
 if (!matchingYear.length) return null;
@@ -361,12 +499,19 @@ ranked = matchingYear;
 ranked.sort((a, b) => a.page - b.page || a.index - b.index);
 
 const row = ranked[0];
-const periods = periodsFromHeader(row.periodContext);
+const coordinateAligned =
+  Array.isArray(row.coordinatePeriods) &&
+  row.coordinatePeriods.length > 0 &&
+  row.coordinatePeriods.length === row.coordinateValues?.length;
+
+const periods = periodsForRow(row);
 const years = periods
 .map(period => period.match(/\b20\d{2}\b/)?.[0])
 .filter(Boolean);
 
-const values = valuesFromRow(row);
+const values = coordinateAligned
+  ? row.coordinateValues
+  : valuesFromRow(row);
 
 // Do not guess if the extracted period columns and numeric cells cannot
 // be aligned reliably. Note numbers may appear before the actual values.
@@ -378,7 +523,11 @@ years.length !== periods.length
 return null;
 }
 
-const periodValues = values.length === periods.length + 1 ? values.slice(1) : values.slice(-periods.length);
+const periodValues = coordinateAligned
+  ? values
+  : values.length === periods.length + 1
+    ? values.slice(1)
+    : values.slice(-periods.length);
 const selectedYear = year || years[0] || null;
 const valueIndex = selectedYear ? years.indexOf(selectedYear) : 0;
 

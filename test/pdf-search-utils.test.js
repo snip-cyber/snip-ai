@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   classifyFinancialSection,
   extractFinancialRows,
+  extractFinancialRowsFromItems,
   extractPageLines,
   selectPrimaryFinancialEvidence
 } from "../api/pdf-search-utils.js";
@@ -211,4 +212,45 @@ test("does not split a label and its numeric value into separate columns", () =>
   ]);
 
   assert.deepEqual(lines, ["Total due $1,250.00"]);
+});
+
+
+test("maps interleaved M&S 2026 statement headers to the correct cash values", () => {
+  const items = [];
+  const add = (str, x, y, width = str.length * 5) =>
+    items.push({ str, width, transform: [1, 0, 0, 1, x, y] });
+
+  add("CONSOLIDATED STATEMENT OF FINANCIAL POSITION", 54, 600);
+  add("29 March", 328.6, 494.3);
+  add("30 March", 379.4, 494.3);
+  add("28 March", 276.7, 486.3);
+  add("2025", 342.4, 486.3);
+  add("2024", 393.3, 486.3);
+  add("2026", 290.9, 478.3);
+  add("Cash and cash equivalents", 53.9, 211, 190);
+  add("18", 250, 211);
+  add("997.2", 284.3, 211);
+  add("864.5", 334.9, 211);
+  add("1,022.4", 380.8, 211);
+
+  const rows = extractFinancialRowsFromItems(items, 116);
+  for (const [year, answer, period] of [
+    ["2026", "997.2", "28 March 2026"],
+    ["2025", "864.5", "29 March 2025"],
+    ["2024", "1,022.4", "30 March 2024"]
+  ]) {
+    const result = selectPrimaryFinancialEvidence(
+      `What were cash and cash equivalents in ${year}?`, rows
+    );
+    assert.ok(result, `Expected a result for ${year}`);
+    assert.equal(result.answer, answer);
+    assert.equal(result.period, period);
+    assert.equal(result.row.page, 116);
+  }
+  assert.equal(
+    selectPrimaryFinancialEvidence(
+      "What were cash and cash equivalents in 2023?", rows
+    ),
+    null
+  );
 });

@@ -6,6 +6,7 @@ import { Agent } from "undici";
 import findHandler from "./find.js";
 import {
   extractFinancialRows,
+  extractFinancialRowsFromItems,
   extractPageLines,
   isCashPositionLookup,
   selectPrimaryFinancialEvidence
@@ -288,10 +289,12 @@ export default async function handler(req, res) {
     }
 
     let renderedPageNumber = 0;
+    const pageLayouts = new Map();
     const parsePromise = pdfParse(bytes, {
       pagerender: async pageData => {
         renderedPageNumber += 1;
         const content = await pageData.getTextContent();
+        pageLayouts.set(renderedPageNumber, content.items);
         const lines = extractPageLines(content.items);
         return `\n[[SNIP_PAGE_${renderedPageNumber}]]\n${lines.join("\n")}\n`;
       }
@@ -307,7 +310,11 @@ export default async function handler(req, res) {
       const page = Number(split[i]);
       const pageText = split[i + 1] || "";
       pageCount = Math.max(pageCount, page);
-      financialRows.push(...extractFinancialRows(pageText, page, financialRows.length));
+      const pageItems = pageLayouts.get(page);
+      const extractedRows = pageItems
+        ? extractFinancialRowsFromItems(pageItems, page, financialRows.length)
+        : extractFinancialRows(pageText, page, financialRows.length);
+      financialRows.push(...extractedRows);
       const pageBlocks = toBlocks(pageText, page);
       if (!pageBlocks.length) pagesWithoutText.push(page);
       for (const item of pageBlocks) {

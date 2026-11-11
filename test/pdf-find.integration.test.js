@@ -62,7 +62,9 @@ test("PDF endpoint answers the M&S FY2025 cash question from the primary stateme
   const pdfBytes = fs.readFileSync(process.env.SNIP_MS_PDF_PATH);
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (url) => {
+    const supabaseResponse = mockSupabase(url);
+    if (supabaseResponse) return supabaseResponse;
     fetchCount += 1;
     return new Response(pdfBytes, {
       status: 200,
@@ -77,7 +79,7 @@ test("PDF endpoint answers the M&S FY2025 cash question from the primary stateme
       body: {
         url: "https://reports.example.test/ms-fy2025.pdf",
         reservation_id: TEST_RESERVATION,
-        question: "What were cash and cash equivalents for FY2025 in the consolidated statement of financial position?"
+        question: "What were cash and cash equivalents for FY2026 in the consolidated statement of financial position?"
       },
       headers: { authorization: "Bearer test-token" }
     }, response);
@@ -97,7 +99,7 @@ test("PDF endpoint answers the M&S FY2025 cash question from the primary stateme
       body: {
         url: "https://reports.example.test/ms-fy2025.pdf",
         reservation_id: TEST_RESERVATION,
-        question: "What were cash and cash equivalents in the FY2026 consolidated statement of financial position?"
+        question: "What were cash and cash equivalents in the FY2023 consolidated statement of financial position?"
       },
       headers: { authorization: "Bearer test-token" }
     }, absentPeriod);
