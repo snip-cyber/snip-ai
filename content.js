@@ -1072,14 +1072,20 @@
       payloadChars += block.text.length;
     }
 
+    let reservationId = null;
     try {
+      const reservation = await sendRuntimeMessage({ type: "SNIP_USAGE_RESERVE" });
+      if (!reservation?.ok || !reservation.reservation_id) { status.textContent = reservation?.error || "Sign in to reserve a Snip search."; root.querySelector(".snip-upgrade").hidden = false; button.disabled = false; return; }
+      reservationId = reservation.reservation_id;
+
       async function requestEvidence(blocks) {
         // Network requests go through the MV3 service worker, not the page-origin
         // content script, so host permissions—not the website's CORS policy—apply.
         const result = await sendRuntimeMessageWithTimeout({
           type: "SNIP_BACKEND_FIND",
           question: query,
-          blocks
+          blocks,
+          reservationId
         }, 35000);
         if (!result?.ok) throw new Error(result?.error || "Snip could not reach its AI service.");
         return result.data || {};
@@ -1129,6 +1135,7 @@
       }
 
       if (evidenceList.length === 0) {
+        if (reservationId) await sendRuntimeMessage({ type: "SNIP_USAGE_RELEASE", reservationId }).catch(() => {});
         status.textContent = "I couldn't locate the exact text on this page.";
         button.disabled = false;
         return;
@@ -1211,8 +1218,9 @@
           block: "center"
         });
 
-        const consumed = await sendRuntimeMessage({ type: "SNIP_CONSUME_USAGE" });
+        const consumed = await sendRuntimeMessage({ type: "SNIP_USAGE_COMMIT", reservationId });
         if (!consumed?.ok || consumed.consumed === false) {
+          if (reservationId) await sendRuntimeMessage({ type: "SNIP_USAGE_RELEASE", reservationId }).catch(() => {});
           status.textContent = "Your Snip limit was reached. Choose a plan to continue.";
           root.querySelector(".snip-upgrade").hidden = false;
           button.disabled = false;
@@ -1234,6 +1242,7 @@
         button.disabled = false;
         button.textContent = "Find again";
       } else {
+        if (reservationId) await sendRuntimeMessage({ type: "SNIP_USAGE_RELEASE", reservationId });
         // The API guarantees verbatim evidence, so try a final pass against
         // the block's own visible text before giving up. This handles DOM
         // differences caused by citation widgets, links, and nested markup.
@@ -1263,6 +1272,7 @@
         button.disabled = false;
       }
     } catch (error) {
+      if (reservationId) await sendRuntimeMessage({ type: "SNIP_USAGE_RELEASE", reservationId }).catch(() => {});
       console.error("Snip search error:", error);
       const message = String(error?.message || "");
       if (/Failed to fetch|NetworkError|Load failed/i.test(message)) {

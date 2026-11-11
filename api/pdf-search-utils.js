@@ -221,27 +221,11 @@ new RegExp(`\\b${MONTH_PATTERN}\\b`, "i").test(line)
 }
 
 function periodsFromHeader(header) {
-const years = [...String(header).matchAll(/\b20\d{2}\b/g)]
-.map(match => match[0]);
-
-const dates = [
-...String(header).matchAll(
-new RegExp(`\\b\\d{1,2}\\s+${MONTH_PATTERN}\\b`, "gi")
-)
-].map(match => match[0]);
-
+const years = [...String(header).matchAll(/\b20\d{2}\b/g)].map(match => match[0]);
+const dates = [...String(header).matchAll(new RegExp(`\\b\\d{1,2}\\s+${MONTH_PATTERN}\\b`, "gi"))].map(match => match[0]);
 const periods = [];
-
-// Do not deduplicate repeated periods: consolidated and company statements
-// may show the same reporting dates in separate columns.
-for (let index = 0; index < Math.min(years.length, dates.length); index += 1) {
-periods.push(`${dates[index]} ${years[index]}`);
-}
-
-if (!periods.length) {
-for (const year of years) periods.push(year);
-}
-
+for (let index = 0; index < Math.min(years.length, dates.length); index += 1) periods.push(`${dates[index]} ${years[index]}`);
+if (!periods.length) for (const year of years) periods.push(year);
 return periods;
 }
 
@@ -317,7 +301,7 @@ return String(question || "").match(
 
 function valuesFromRow(row) {
 const start = normalized(row.text).indexOf(row.label) + row.label.length;
-const tail = row.text.slice(start);
+const tail = row.text.slice(start).replace(/(\d)\s*\.\s*(\d)/g, "$1.$2");
 
 // Capture whole numeric cells, including thousands separators and decimals.
 return [
@@ -394,7 +378,7 @@ years.length !== periods.length
 return null;
 }
 
-const periodValues = values.slice(-periods.length);
+const periodValues = values.length === periods.length + 1 ? values.slice(1) : values.slice(-periods.length);
 const selectedYear = year || years[0] || null;
 const valueIndex = selectedYear ? years.indexOf(selectedYear) : 0;
 

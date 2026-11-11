@@ -1,0 +1,81 @@
+const URL = process.env.SUPABASE_URL;
+const ANON = process.env.SUPABASE_ANON_KEY;
+const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+async function rpc(name, body) {
+  const response = await fetch(`${URL}/rest/v1/rpc/${name}`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE,
+      Authorization: `Bearer ${SERVICE}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(12000)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || `Database error ${response.status}`);
+  return data;
+}
+
+async function verifyUser(token) {
+  const response = await fetch(`${URL}/auth/v1/user`, {
+    headers: { apikey: ANON, Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!response.ok) throw new Error("Invalid session. Please sign in again.");
+  const user = await response.json();
+  if (!user.id) throw new Error("Account verification failed.");
+  return user.id;
+}
+
+async function verifyPlan(key) {
+  if (!key) throw new Error("Subscription verification unavailable.");
+  const response = await fetch(`https://extensionpay.com/extension/snip/api/v2/user?api_key=${encodeURIComponent(key)}`, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!response.ok) throw new Error("Subscription verification failed.");
+  const user = await response.json();
+  if (!user.paid) return "free";
+  const name = String(user.plan?.nickname || "").toLowerCase();
+  const amount = Number(user.plan?.unitAmountCents || 0);
+  if (name === "unlimited" || amount === 1500) return "unlimited";
+  if (name === "pro" || amount === 500) return "pro";
+  throw new Error("Unrecognized paid subscription plan.");
+}
+
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Snip-ExtensionPay-Key');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  try {
+    if (!URL || !ANON || !SERVICE) throw new Error("Missing Supabase configuration.");
+    const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (!token) return res.status(401).json({ error: "Sign in required." });
+    const userId = await verifyUser(token);
+    const plan = await verifyPlan(req.headers["x-snip-extensionpay-key"]);
+    const action = String(req.body?.action || "");
+    const id = String(req.body?.reservation_id || "");
+    if (action === "status") {
+      const result = await rpc("snip_get_usage", { p_user_id: userId, p_plan: plan });
+      return res.status(200).json({ ...result, plan, authenticated: true });
+    }
+    if (action === "reserve") {
+      const result = await rpc("snip_reserve_usage", { p_user_id: userId, p_plan: plan });
+      return res.status(200).json({ ...result, plan, authenticated: true });
+    }
+    if (action === "commit" || action === "release") {
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: "Invalid reservation." });
+      const fn = action === "commit" ? "snip_commit_usage" : "snip_release_usage";
+      const result = await rpc(fn, { p_user_id: userId, p_reservation_id: id });
+      return res.status(200).json(result);
+    }
+    return res.status(400).json({ error: "Unknown usage action." });
+  } catch (error) {
+    console.error("Snip usage error:", error.message);
+    return res.status(503).json({ error: "Usage service unavailable." });
+  }
+}

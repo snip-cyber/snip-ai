@@ -1,5 +1,5 @@
 (() => {
-  const API = 'https://snip-chi.vercel.app/api/pdf-find';
+  const API = 'https://snip-ai-delta.vercel.app/api/pdf-find';
   const $ = id => document.getElementById(id);
   const params = new URLSearchParams(location.search);
   let pdfUrl = params.get('url') || '';
@@ -206,6 +206,70 @@
     // URL scopes the cache to this source; PDF.js fingerprint and page count
     // invalidate it when the file contents change at the same URL.
     return `${pdfUrl}::${fingerprint || 'no-fingerprint'}::${doc?.numPages || 0}`;
+  }
+
+  const HIGHLIGHT_PREFIX = 'snip_pdf_highlight_';
+  const HIGHLIGHT_TTL = 24 * 60 * 60 * 1000;
+
+  function highlightStorageKey(identity) {
+    let hash = 2166136261;
+    for (let i = 0; i < identity.length; i++) {
+      hash ^= identity.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return HIGHLIGHT_PREFIX + (hash >>> 0).toString(16);
+  }
+
+  async function savePdfHighlight(app, evidence, page, quote) {
+    try {
+      const identity = pdfIdentity(app);
+      const key = highlightStorageKey(identity);
+      await chrome.storage.local.set({
+        [key]: {
+          identity,
+          text: String(evidence || '').slice(0, 3000),
+          quote: String(quote || '').slice(0, 1000),
+          page,
+          savedAt: Date.now(),
+          expiresAt: Date.now() + HIGHLIGHT_TTL
+        }
+      });
+    } catch (error) {
+      diag('highlight-save-failed', { message: error?.message || String(error) });
+    }
+  }
+
+  async function restoreSavedHighlight() {
+    try {
+      const app = await ensurePdfViewer(1);
+      const identity = pdfIdentity(app);
+      const key = highlightStorageKey(identity);
+      const stored = await chrome.storage.local.get(key);
+      const record = stored?.[key];
+
+      if (!record) return;
+      if (record.identity !== identity || !record.expiresAt || record.expiresAt <= Date.now()) {
+        await chrome.storage.local.remove(key);
+        return;
+      }
+
+      if (!Number.isInteger(record.page) || record.page < 1 || record.page > app.pdfDocument.numPages) {
+        await chrome.storage.local.remove(key);
+        return;
+      }
+
+      const restored = await findAndHighlightPassage(
+        app, record.text, record.page, record.quote
+      );
+
+      if (restored.found) {
+        diag('highlight-restored', { page: restored.matchedPage || record.page });
+      } else {
+        diag('highlight-restore-not-found', { page: record.page });
+      }
+    } catch (error) {
+      diag('highlight-restore-failed', { message: error?.message || String(error) });
+    }
   }
 
   function assemblePdfText(items) {
@@ -735,30 +799,19 @@
   async function search() {
     const question=$('question').value.trim(); if(!question || searchInProgress) return;
     searchInProgress = true;
-    const u=await send({type:'SNIP_GET_USAGE'});
-    if(!u?.ok){$('status').textContent=u?.error||'Could not verify your Snip plan.';searchInProgress=false;return;}
-    if(u.plan==='anonymous'&&u.remaining<=0){$('status').textContent='Your 10 free searches are used. Sign up or log in to continue.';searchInProgress=false;return;}
-    if(u.plan!=='anonymous'&&u.plan!=='unlimited'&&u.remaining<=0){$('upgrade').hidden=false;$('status').textContent='You’ve reached your Snip limit.';searchInProgress=false;return;}
     if(!pdfUrl){$('status').textContent='Could not identify this PDF.';searchInProgress=false;return;}
     $('find').disabled=true;$('status').textContent='Snip is searching the PDF…';
     diag('search-start', { question, pdfUrl });
+    let reservationId = null;
     try {
-      const requestController = new AbortController();
-      const requestTimer = setTimeout(() => requestController.abort(), 25000);
-      let response;
-      let raw;
-      try {
-        response = await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,url:pdfUrl}),signal:requestController.signal});
-        // Keep the deadline active while consuming the response body too; a
-        // server can send headers and then stall before finishing the payload.
-        raw = await response.text();
-      } catch (error) {
-        if (error?.name === 'AbortError') throw new Error('PDF search took too long. Please try again.');
-        throw error;
-      } finally { clearTimeout(requestTimer); }
-      let data={}; try{data=JSON.parse(raw)}catch{}
-      diag('api-response', { httpStatus: response.status, pageCount: data.pageCount, evidenceCount: Array.isArray(data.evidence) ? data.evidence.length : 0, error: data.error || null });
-      if(!response.ok) throw new Error(data.error||`PDF search failed (${response.status})`);
+      const reservation = await send({type:'SNIP_USAGE_RESERVE'});
+      if (!reservation?.ok || !reservation.reservation_id) throw new Error(reservation?.error || 'Sign in to reserve a Snip search.');
+      reservationId = reservation.reservation_id;
+      const result = await send({type:'SNIP_BACKEND_PDF_FIND', question, url:pdfUrl, reservationId});
+      if (!result?.ok) throw new Error(result?.error || 'PDF search failed.');
+      const data = result.data || {};
+      diag('api-response', { pageCount: data.pageCount, evidenceCount: Array.isArray(data.evidence) ? data.evidence.length : 0, error: data.error || null });
+      if (data.error) throw new Error(data.error);
       const evidence=Array.isArray(data.evidence)?data.evidence:[];
       // Keep only usable evidence. Prefer the API's highest confidence/score
       // when supplied; otherwise preserve its ranked order.
@@ -888,16 +941,19 @@
             ? `Snip couldn't verify the reported evidence against the PDF text. It won't claim a match. Your search was not charged; try a more specific question.`
             : `Snip found possible evidence on page ${page}, but could not confirm a visible highlight. Your search was not charged; try rephrasing the question.`;
         diag('search-finished', { selectedPage: page, pageCount: data.pageCount, highlightFound: false, highlightQuery: highlight.query, highlightReason: highlight.reason || null });
+        if (reservationId) await send({type:'SNIP_USAGE_RELEASE', reservationId});
         return;
       }
-      const consumed=await send({type:'SNIP_CONSUME_USAGE'});
+      const consumed=await send({type:'SNIP_USAGE_COMMIT', reservationId});
       if(!consumed?.ok||consumed.consumed===false){$('status').textContent='Your Snip limit was reached.';$('upgrade').hidden=false;return;}
       $('usage').textContent=usageText(consumed);
+      await savePdfHighlight(app, selected.text, highlight.matchedPage || page, selected.quote || highlight.query);
       $('status').textContent = `Opened page ${highlight.matchedPage || page} and highlighted the matching passage.`;
       diag('search-finished', { selectedPage: highlight.matchedPage || page, pageCount: data.pageCount, highlightFound: true, highlightQuery: highlight.query, highlightReason: null });
-    } catch(e){diag('search-error', { message: e?.message || String(e) });$('status').textContent=e?.message||'Snip could not search this PDF.';}
+    } catch(e){if(reservationId) await send({type:'SNIP_USAGE_RELEASE', reservationId}).catch(()=>{});diag('search-error', { message: e?.message || String(e) });$('status').textContent=e?.message||'Snip could not search this PDF.';}
     finally { searchInProgress = false; $('find').disabled=false; }
   }
+  $('brief').onclick=createExecutiveBrief;
   $('find').onclick=search;$('question').addEventListener('keydown',e=>{if(e.key==='Enter')search();if(e.key==='Escape')window.close()});$('close').onclick=()=>window.close();
   $('login').onclick=()=>openAuth('login');$('signup').onclick=()=>openAuth('signup');$('auth-submit').onclick=submitAuth;$('auth-cancel').onclick=()=>{$('auth').hidden=true};$('logout').onclick=async()=>{const r=await send({type:'SNIP_AUTH_LOGOUT'});await refresh();$('status').textContent=r?.ok?'Logged out.':'Logged out locally; remote sign-out could not be confirmed.'};
   $('pricing').onclick=async()=>{await refresh();$('upgrade').hidden=false;};
@@ -910,6 +966,37 @@
     $('status').textContent='Free plan selected · 10 searches per day. No payment required.';
   };
   let paymentCheckInProgress = false;
+  async function createExecutiveBrief() {
+    const button = $("brief"), panel = $("brief-panel"), output = $("brief-output");
+    if (!pdfUrl || !button || button.disabled) return;
+    button.disabled = true;
+    button.textContent = "Preparing…";
+    $("status").textContent = "Reading the PDF and preparing its Executive Brief…";
+    let reservationId = null;
+    try {
+      const reservation = await send({ type: "SNIP_USAGE_RESERVE" });
+      if (!reservation?.ok || !reservation.reservation_id)
+        throw new Error(reservation?.error || "Sign in to reserve a Snip search.");
+      reservationId = reservation.reservation_id;
+      const result = await send({ type: "SNIP_BACKEND_PDF_SUMMARY", url: pdfUrl, reservationId });
+      if (!result?.ok || !result.data?.brief)
+        throw new Error(result?.error || "Could not create the Executive Brief.");
+      const data = result.data;
+      const consumed = await send({ type: "SNIP_USAGE_COMMIT", reservationId });
+      if (!consumed?.ok) throw new Error(consumed?.error || "Could not confirm usage.");
+      $("usage").textContent = usageText(consumed);
+      output.textContent = data.brief;
+      panel.hidden = false;
+      $("status").textContent = `Executive Brief ready · ${data.pagesUsed || data.pageCount || 0} pages analyzed.`;
+      button.textContent = "Refresh Executive Brief";
+    } catch (error) {
+      if (reservationId) await send({ type: "SNIP_USAGE_RELEASE", reservationId }).catch(() => {});
+      $("status").textContent = error?.message || "Could not create the Executive Brief.";
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async function choosePaidPlan(plan) {
     if (paymentCheckInProgress) return;
     paymentCheckInProgress = true;
@@ -952,7 +1039,7 @@
   if(!pdfUrl){ $('status').textContent='No PDF was provided.'; }
   else {
     try{$('pdf-title').textContent=decodeURIComponent(new URL(pdfUrl).pathname.split('/').pop()||'PDF')}catch{$('pdf-title').textContent='PDF'}
-    if($('pdf-viewer')) startViewerLoad(false);
+    if($('pdf-viewer')) startViewerLoad(false).then(() => restoreSavedHighlight()).catch(() => {});
   }
   refresh();
   // Keep entitlement and the visible plan cards synchronized without reopening the PDF window.

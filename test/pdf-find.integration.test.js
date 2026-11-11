@@ -2,6 +2,18 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
+process.env.SUPABASE_URL ||= "https:" + "/" + "/test.supabase.co";
+process.env.SUPABASE_ANON_KEY ||= "test-anon";
+process.env.SUPABASE_SERVICE_ROLE_KEY ||= "test-service";
+
+const TEST_RESERVATION = "11111111-1111-4111-8111-111111111111";
+const TEST_USER = "22222222-2222-4222-8222-222222222222";
+function mockSupabase(url) {
+  if (String(url).endsWith("/auth/v1/user")) return new Response(JSON.stringify({ id: TEST_USER }), { status: 200 });
+  if (String(url).includes("/rest/v1/snip_usage_reservations?")) return new Response(JSON.stringify([{ id: TEST_RESERVATION }]), { status: 200 });
+  return null;
+}
+
 const { default: pdfFindHandler, publicDnsLookup, createPublicDnsLookup, extractScannedPdfPages } = await import("../api/pdf-find.js");
 
 function createResponse() {
@@ -64,9 +76,10 @@ test("PDF endpoint answers the M&S FY2025 cash question from the primary stateme
       method: "POST",
       body: {
         url: "https://reports.example.test/ms-fy2025.pdf",
+        reservation_id: TEST_RESERVATION,
         question: "What were cash and cash equivalents for FY2025 in the consolidated statement of financial position?"
       },
-      headers: {}
+      headers: { authorization: "Bearer test-token" }
     }, response);
 
     assert.equal(response.statusCode, 200);
@@ -83,9 +96,10 @@ test("PDF endpoint answers the M&S FY2025 cash question from the primary stateme
       method: "POST",
       body: {
         url: "https://reports.example.test/ms-fy2025.pdf",
+        reservation_id: TEST_RESERVATION,
         question: "What were cash and cash equivalents in the FY2026 consolidated statement of financial position?"
       },
-      headers: {}
+      headers: { authorization: "Bearer test-token" }
     }, absentPeriod);
 
     assert.equal(absentPeriod.statusCode, 200);
@@ -104,7 +118,7 @@ test("PDF preflight advertises cross-origin POST support without fetching a PDF"
 
   try {
     const response = createResponse();
-    await pdfFindHandler({ method: "OPTIONS", headers: {} }, response);
+    await pdfFindHandler({ method: "OPTIONS", headers: { authorization: "Bearer test-token" } }, response);
 
     assert.equal(response.statusCode, 204);
     assert.equal(response.headers["Access-Control-Allow-Origin"], "*");
@@ -132,7 +146,7 @@ test("rejects private and special-use IPv4/IPv6 targets and credential-bearing U
       "http://user:pass@example.com/report.pdf"
     ]) {
       const response = createResponse();
-      await pdfFindHandler({ method: "POST", body: { url, question: "What is the answer?" }, headers: {} }, response);
+      await pdfFindHandler({ method: "POST", body: { url, reservation_id: TEST_RESERVATION, reservation_id: TEST_RESERVATION, question: "What is the answer?" }, headers: { authorization: "Bearer test-token" } }, response);
       assert.equal(response.statusCode, 400, url);
     }
     assert.equal(fetchCount, 0);
@@ -143,12 +157,14 @@ test("validates redirect targets before fetching them", async () => {
   const originalFetch = globalThis.fetch;
   const requested = [];
   globalThis.fetch = async url => {
+    const auth = mockSupabase(url);
+    if (auth) return auth;
     requested.push(String(url));
     return new Response(null, { status: 302, headers: { location: "http://[fc00::1]/internal.pdf" } });
   };
   try {
     const response = createResponse();
-    await pdfFindHandler({ method: "POST", body: { url: "https://public.example/report.pdf", question: "What is the answer?" }, headers: {} }, response);
+    await pdfFindHandler({ method: "POST", body: { url: "https://public.example/report.pdf", reservation_id: TEST_RESERVATION, question: "What is the answer?" }, headers: { authorization: "Bearer test-token" } }, response);
     assert.equal(response.statusCode, 400);
     assert.deepEqual(requested, ["https://public.example/report.pdf"]);
   } finally { globalThis.fetch = originalFetch; }
@@ -201,7 +217,9 @@ test("DNS guard returns the same validated public addresses for connection pinni
 test("allows a globally routable IPv6 PDF URL through URL validation", async () => {
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async url => {
+    const auth = mockSupabase(url);
+    if (auth) return auth;
     fetchCount += 1;
     return new Response("not a PDF", { status: 200, headers: { "content-type": "text/plain" } });
   };
@@ -209,8 +227,8 @@ test("allows a globally routable IPv6 PDF URL through URL validation", async () 
     const response = createResponse();
     await pdfFindHandler({
       method: "POST",
-      body: { url: "https://[2606:4700:4700::1111]/report.pdf", question: "What is the answer?" },
-      headers: {}
+      body: { url: "https://[2606:4700:4700::1111]/report.pdf", reservation_id: TEST_RESERVATION, question: "What is the answer?" },
+      headers: { authorization: "Bearer test-token" }
     }, response);
     assert.equal(fetchCount, 1);
     assert.equal(response.statusCode, 415);

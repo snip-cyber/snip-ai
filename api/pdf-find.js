@@ -1,3 +1,4 @@
+import { verifyUsageReservation } from "./usage-auth.js";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns";
@@ -17,7 +18,7 @@ const TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout >= 10
   ? Math.min(configuredTimeout, DEFAULT_TIMEOUT_MS)
   : DEFAULT_TIMEOUT_MS;
 
-function unsafeUrl(raw) {
+export function unsafeUrl(raw) {
   try {
     const u = new URL(raw);
     if (!["http:", "https:"].includes(u.protocol) || u.username || u.password) return true;
@@ -91,7 +92,7 @@ function errorStatus(error, fallback = 500) {
   return Number.isInteger(error?.statusCode) ? error.statusCode : fallback;
 }
 
-async function readLimited(response, controller) {
+export async function readLimited(response, controller) {
   const length = Number(response.headers.get("content-length"));
   if (Number.isFinite(length) && length > MAX_PDF_BYTES) {
     controller.abort();
@@ -232,7 +233,7 @@ function isExplicitPrimaryStatementCashQuestion(question) {
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "86400");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -247,6 +248,10 @@ export default async function handler(req, res) {
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
+    const reservation = await verifyUsageReservation(req);
+    if (!reservation.ok) return res.status(reservation.status).json({ error: reservation.error });
+
+
     let requestUrl = url;
     let response;
     for (let redirects = 0; redirects <= 3; redirects += 1) {
@@ -292,7 +297,7 @@ export default async function handler(req, res) {
       }
     });
     const parsed = await withAbort(parsePromise, controller.signal);
-    const split = String(parsed.text || "").split(/\\[\[SNIP_PAGE_(\d+)\\]\]/g);
+    const split = String(parsed.text || "").split(/\[\[SNIP_PAGE_(\d+)\]\]/g);
     const blocks = [];
     const financialRows = [];
     const pagesWithoutText = [];

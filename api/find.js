@@ -1,3 +1,54 @@
+import { verifyUsageReservation } from "./usage-auth.js";
+
+async function getSemanticScores(question, items) {
+  if (!OPENAI_API_KEY || !items.length) return [];
+
+  const selected = items.slice(0, 300);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: [
+          question,
+          ...selected.map(item => item.sentence.slice(0, 1200))
+        ]
+      }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) throw new Error(`Embedding API returned ${response.status}`);
+
+    const payload = await response.json();
+    const vectors = (payload.data || [])
+      .sort((a, b) => a.index - b.index)
+      .map(item => item.embedding);
+
+    if (vectors.length !== selected.length + 1) {
+      throw new Error("Incomplete embedding response");
+    }
+
+    const query = vectors[0];
+    const queryNorm = Math.sqrt(query.reduce((sum, v) => sum + v * v, 0));
+
+    return selected.map((item, index) => {
+      const vector = vectors[index + 1];
+      const norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
+      const dot = vector.reduce((sum, v, i) => sum + v * query[i], 0);
+      return queryNorm && norm ? dot / (queryNorm * norm) : 0;
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ALLOWED_ORIGIN = "*";
 const DEFAULT_OPENAI_TIMEOUT_MS = 15000;
@@ -9,7 +60,7 @@ const OPENAI_TIMEOUT_MS = Number.isFinite(configuredOpenAiTimeout) && configured
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -19,6 +70,9 @@ export default async function handler(req, res) {
   }
 
   try {
+    const reservation = await verifyUsageReservation(req);
+    if (!reservation.ok) return res.status(reservation.status).json({ error: reservation.error });
+
     if (!OPENAI_API_KEY) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
@@ -98,6 +152,19 @@ export default async function handler(req, res) {
     const ranked = sentenceItems
       .map(item => ({ ...item, score: scoreSentence(item, info) }))
       .sort((a, b) => b.score - a.score);
+
+    // Semantic retrieval supplements lexical ranking. If embeddings fail,
+    // the existing deterministic search continues unchanged.
+    try {
+      const semanticScores = await getSemanticScores(question, ranked);
+      semanticScores.forEach((score, index) => {
+        ranked[index].semantic_score = score;
+        ranked[index].score += score * 40;
+      });
+      ranked.sort((a, b) => b.score - a.score);
+    } catch (error) {
+      console.error("Semantic ranking unavailable; using lexical ranking:", error?.message || error);
+    }
 
     // BUILD MODEL CANDIDATES
     const candidateMap = new Map();
