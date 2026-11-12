@@ -241,7 +241,7 @@
       if (!root.isConnected) return;
       if (!result?.ok) {
         status.textContent = result?.error || "Authentication failed. Please try again.";
-        if (mainStatus) mainStatus.textContent = status.textContent;
+
         return;
       }
       if (mode === "signup") {
@@ -271,7 +271,7 @@
     } catch (error) {
       if (root.isConnected) {
         status.textContent = error?.message || "Authentication failed. Check your connection and try again.";
-        if (mainStatus) mainStatus.textContent = status.textContent;
+
       }
     } finally {
       if (root.isConnected) {
@@ -340,13 +340,21 @@
 
   function sendRuntimeMessage(message) {
     return new Promise(resolve => {
-      chrome.runtime.sendMessage(message, response => {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: chrome.runtime.lastError.message });
-          return;
-        }
-        resolve(response || { ok: false, error: "No response" });
-      });
+      try {
+        chrome.runtime.sendMessage(message, response => {
+          try {
+            if (chrome.runtime.lastError) {
+              resolve({ ok: false, error: chrome.runtime.lastError.message });
+              return;
+            }
+            resolve(response || { ok: false, error: "No response" });
+          } catch (error) {
+            resolve({ ok: false, error: error?.message || "Extension context unavailable." });
+          }
+        });
+      } catch (error) {
+        resolve({ ok: false, error: error?.message || "Extension context unavailable." });
+      }
     });
   }
 

@@ -1,14 +1,16 @@
+import { createHash } from "node:crypto";
+
 const URL = process.env.SUPABASE_URL;
 const ANON = process.env.SUPABASE_ANON_KEY;
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 async function rpc(name, body) {
   const response = await fetch(`${URL}/rest/v1/rpc/${name}`, {
-    method: 'POST',
+    method: "POST",
     headers: {
       apikey: SERVICE,
       Authorization: `Bearer ${SERVICE}`,
-      'Content-Type': 'application/json'
+      "Content-Type": "application/json"
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(12000)
@@ -31,10 +33,10 @@ async function verifyUser(token) {
 
 async function verifyPlan(key) {
   if (!key) throw new Error("Subscription verification unavailable.");
-  const response = await fetch(`https://extensionpay.com/extension/snip/api/v2/user?api_key=${encodeURIComponent(key)}`, {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(10000)
-  });
+  const response = await fetch(
+    `https://extensionpay.com/extension/snip/api/v2/user?api_key=${encodeURIComponent(key)}`,
+    { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10000) }
+  );
   if (!response.ok) throw new Error("Subscription verification failed.");
   const user = await response.json();
   if (!user.paid) return "free";
@@ -45,35 +47,66 @@ async function verifyPlan(key) {
   throw new Error("Unrecognized paid subscription plan.");
 }
 
+function installHash(key) {
+  return createHash("sha256").update(key).digest("hex");
+}
+
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Snip-ExtensionPay-Key');
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Snip-ExtensionPay-Key");
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
   try {
     if (!URL || !ANON || !SERVICE) throw new Error("Missing Supabase configuration.");
+
     const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-    if (!token) return res.status(401).json({ error: "Sign in required." });
-    const userId = await verifyUser(token);
-    const plan = await verifyPlan(req.headers["x-snip-extensionpay-key"]);
+    const key = String(req.headers["x-snip-extensionpay-key"] || "");
     const action = String(req.body?.action || "");
     const id = String(req.body?.reservation_id || "");
-    if (action === "status") {
-      const result = await rpc("snip_get_usage", { p_user_id: userId, p_plan: plan });
-      return res.status(200).json({ ...result, plan, authenticated: true });
-    }
-    if (action === "reserve") {
-      const result = await rpc("snip_reserve_usage", { p_user_id: userId, p_plan: plan });
-      return res.status(200).json({ ...result, plan, authenticated: true });
-    }
+
+    if (!["status", "reserve", "commit", "release"].includes(action))
+      return res.status(400).json({ error: "Unknown usage action." });
+
     if (action === "commit" || action === "release") {
-      if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: "Invalid reservation." });
+      if (!/^[0-9a-f-]{36}$/i.test(id))
+        return res.status(400).json({ error: "Invalid reservation." });
+    }
+
+    const plan = await verifyPlan(key);
+
+    if (token) {
+      const userId = await verifyUser(token);
+      const args = { p_user_id: userId, p_plan: plan };
+
+      if (action === "status" || action === "reserve") {
+        const fn = action === "status" ? "snip_get_usage" : "snip_reserve_usage";
+        const result = await rpc(fn, args);
+        return res.status(200).json({ ...result, plan, authenticated: true });
+      }
+
       const fn = action === "commit" ? "snip_commit_usage" : "snip_release_usage";
       const result = await rpc(fn, { p_user_id: userId, p_reservation_id: id });
       return res.status(200).json(result);
     }
-    return res.status(400).json({ error: "Unknown usage action." });
+
+    if (plan !== "free")
+      return res.status(401).json({ error: "Sign in to use your paid subscription." });
+
+    const hash = installHash(key);
+    const args = { p_install_hash: hash };
+
+    if (action === "status" || action === "reserve") {
+      const fn = action === "status" ? "snip_anon_get_usage" : "snip_anon_reserve_usage";
+      const result = await rpc(fn, args);
+      return res.status(200).json({ ...result, plan: "anonymous", authenticated: false });
+    }
+
+    const fn = action === "commit" ? "snip_anon_commit_usage" : "snip_anon_release_usage";
+    const result = await rpc(fn, { p_install_hash: hash, p_reservation_id: id });
+    return res.status(200).json(result);
   } catch (error) {
     console.error("Snip usage error:", error.message);
     return res.status(503).json({ error: "Usage service unavailable." });

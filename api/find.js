@@ -60,7 +60,7 @@ const OPENAI_TIMEOUT_MS = Number.isFinite(configuredOpenAiTimeout) && configured
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Snip-ExtensionPay-Key");
   res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -70,8 +70,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    const reservation = await verifyUsageReservation(req);
-    if (!reservation.ok) return res.status(reservation.status).json({ error: reservation.error });
+    if (!req.snipInternalVerified) {
+      const reservation = await verifyUsageReservation(req);
+      if (!reservation.ok) return res.status(reservation.status).json({ error: reservation.error });
+    }
 
     if (!OPENAI_API_KEY) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });

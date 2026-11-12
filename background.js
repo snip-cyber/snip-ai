@@ -13,7 +13,6 @@ const SUPABASE_URL = 'https://zkkmgrsrchnwvijeyyan.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpra21ncnNyY2hud3ZpamV5eWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNjI2NzgsImV4cCI6MjEwNzYzODY3OH0.LYmjxYwnSlZhcd3P45UTFmxpwmCufTVgdohFkq3m2NA';
 
 async function supabaseAuth(path, options = {}) {
-  const session = reservationId ? await getAuthSession() : null;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 12000);
   try {
@@ -155,8 +154,6 @@ function accountUsageKey(plan, session) {
 }
 
 async function getUsage() {
-  const session = await getAuthSession();
-  if (!session?.access_token) return { ok: false, error: "Sign in to view usage." };
   return usageRequest("status");
 }
 
@@ -260,12 +257,16 @@ async function requestSnipEvidence(question, blocks, reservationId) {
   if (!reservationId) throw new Error("A valid usage reservation is required.");
   const controller = new AbortController();
   const session = await getAuthSession();
-  if (!session?.access_token) throw new Error("Session expired. Please sign in again.");
+  const apiKey = await extpay.ensureApiKey();
   const timeoutId = setTimeout(() => controller.abort(), 30000);
   try {
     const response = await fetch('https://snip-ai-delta.vercel.app/api/find', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        "X-Snip-ExtensionPay-Key": apiKey,
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+      },
       body: JSON.stringify({ question: question.trim(), blocks: safeBlocks, reservation_id: reservationId || null }),
       signal: controller.signal,
       cache: 'no-store'
@@ -338,13 +339,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       if (message?.type === 'SNIP_BACKEND_PDF_FIND') {
         const session = await getAuthSession();
-        if (!session?.access_token || !message.reservationId) {
-          sendResponse({ ok: false, error: 'Sign-in and usage reservation required.' });
+        const apiKey = await extpay.ensureApiKey();
+        if (!message.reservationId) {
+          sendResponse({ ok: false, error: 'Usage reservation required.' });
           return;
         }
         const response = await fetch('https://snip-ai-delta.vercel.app/api/pdf-find', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          headers: {
+            'Content-Type': 'application/json',
+            "X-Snip-ExtensionPay-Key": apiKey,
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          },
           body: JSON.stringify({ question: message.question, url: message.url, reservation_id: message.reservationId }),
           signal: AbortSignal.timeout(60000)
         });
@@ -354,13 +360,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       if (message?.type === 'SNIP_BACKEND_PDF_SUMMARY') {
         const session = await getAuthSession();
-        if (!session?.access_token || !message.reservationId) {
-          sendResponse({ ok: false, error: 'Sign-in and usage reservation required.' });
+        const apiKey = await extpay.ensureApiKey();
+        if (!message.reservationId) {
+          sendResponse({ ok: false, error: 'Usage reservation required.' });
           return;
         }
         const response = await fetch('https://snip-ai-delta.vercel.app/api/summary', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          headers: {
+            'Content-Type': 'application/json',
+            "X-Snip-ExtensionPay-Key": apiKey,
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          },
           body: JSON.stringify({ url: message.url, reservation_id: message.reservationId }),
           signal: AbortSignal.timeout(60000)
         });
@@ -369,18 +380,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       if (message?.type === 'SNIP_USAGE_RESERVE') {
-        const session = await getAuthSession();
-        if (!session) {
-          sendResponse({ ok: false, error: "Sign in to reserve a Snip search." });
-          return;
-        }
         sendResponse({ ok: true, ...(await usageRequest("reserve")) });
         return;
       }
       if (message?.type === 'SNIP_USAGE_COMMIT') {
-        const session = await getAuthSession();
-        if (!session?.access_token || !message.reservationId) {
-          sendResponse({ ok: false, error: "Session expired. Please sign in again." });
+        if (!message.reservationId) {
+          sendResponse({ ok: false, error: "Usage reservation required." });
           return;
         }
         const result = await usageRequest("commit", message.reservationId);
@@ -388,8 +393,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       if (message?.type === 'SNIP_USAGE_RELEASE') {
-        const session = await getAuthSession();
-        if (session) await usageRequest("release", message.reservationId);
+        if (message.reservationId) await usageRequest("release", message.reservationId);
         sendResponse({ ok: true });
         return;
       }
@@ -429,7 +433,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       sendResponse({ ok: false, error: 'Unknown message' });
     } catch (error) {
-      console.error('Snip background error:', error);
+      console.error(
+        'Snip background error in message:',
+        message?.type,
+        error?.stack || error
+      );
       sendResponse({ ok: false, error: error?.message || 'Something went wrong.' });
     }
   })();
@@ -478,13 +486,12 @@ chrome.action.onClicked.addListener(async tab => {
 
 async function usageRequest(action, reservationId) {
   const session = await getAuthSession();
-  if (!session?.access_token) throw new Error("Sign in required.");
   const apiKey = await extpay.ensureApiKey();
   const response = await fetch("https://snip-ai-delta.vercel.app/api/usage", {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${session.access_token}`,
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
       "X-Snip-ExtensionPay-Key": apiKey
     },
     body: JSON.stringify({ action, reservation_id: reservationId || "" }),
