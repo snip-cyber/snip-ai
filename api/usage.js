@@ -112,7 +112,12 @@ export default async function handler(req, res) {
     const result = await rpc(fn, { p_install_hash: hash, p_reservation_id: id });
     return res.status(200).json(result);
   } catch (error) {
-    console.error("Snip usage error:", error.message);
+    console.error("Snip usage error:", {
+      message: error.message,
+      cause: error.cause?.message,
+      code: error.cause?.code,
+      hostname: (() => { try { return new URL(URL).hostname; } catch { return "invalid-url"; } })()
+    });
     return res.status(503).json({ error: "Usage service unavailable." });
   }
 }
