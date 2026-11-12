@@ -174,6 +174,8 @@
             : result?.plan === "pro"
               ? "Pro plan active · 500 searches/month."
               : "Payment confirmed.";
+        }).catch(() => {
+          if (root.isConnected && status) status.textContent = "Payment confirmed. Could not refresh plan status.";
         });
       }
     });
@@ -184,8 +186,8 @@
     });
 
     input.focus();
-    refreshAuth();
-    const syncPlanState = () => { if (root.isConnected) refreshUsage(root); };
+    refreshAuth().catch(() => {});
+    const syncPlanState = () => { if (root.isConnected) refreshUsage(root).catch(() => {}); };
     host.__planSyncInterval = setInterval(syncPlanState, 5000);
     window.addEventListener("focus", syncPlanState);
     document.addEventListener("visibilitychange", syncPlanState);
@@ -325,7 +327,7 @@
     logout.hidden = !loggedIn;
     manage.hidden = true;
     button.disabled = false;
-    refreshUsage(activeRoot);
+    refreshUsage(activeRoot).catch(() => {});
   }
 
   async function refreshAuth() {

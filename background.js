@@ -79,6 +79,20 @@ async function getAuthSession() {
   }
 }
 
+async function getSnipRequestIdentity() {
+  const session = await getAuthSession();
+  if (session?.access_token) {
+    return { session, apiKey: await extpay.ensureApiKey() };
+  }
+  const stored = await chrome.storage.local.get("snip_install_id");
+  let apiKey = stored.snip_install_id;
+  if (typeof apiKey !== "string" || apiKey.length < 16) {
+    apiKey = crypto.randomUUID();
+    await chrome.storage.local.set({ snip_install_id: apiKey });
+  }
+  return { session: null, apiKey };
+}
+
 async function authSignup(email, password) {
   const data = await supabaseAuth('/auth/v1/signup', { body: { email, password } });
   if (data.access_token) await saveSession(data);
@@ -256,8 +270,7 @@ async function requestSnipEvidence(question, blocks, reservationId) {
 
   if (!reservationId) throw new Error("A valid usage reservation is required.");
   const controller = new AbortController();
-  const session = await getAuthSession();
-  const apiKey = await extpay.ensureApiKey();
+  const { session, apiKey } = await getSnipRequestIdentity();
   const timeoutId = setTimeout(() => controller.abort(), 30000);
   try {
     const response = await fetch('https://snip-ai-delta.vercel.app/api/find', {
@@ -338,8 +351,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       if (message?.type === 'SNIP_BACKEND_PDF_FIND') {
-        const session = await getAuthSession();
-        const apiKey = await extpay.ensureApiKey();
+        const { session, apiKey } = await getSnipRequestIdentity();
         if (!message.reservationId) {
           sendResponse({ ok: false, error: 'Usage reservation required.' });
           return;
@@ -359,8 +371,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       if (message?.type === 'SNIP_BACKEND_PDF_SUMMARY') {
-        const session = await getAuthSession();
-        const apiKey = await extpay.ensureApiKey();
+        const { session, apiKey } = await getSnipRequestIdentity();
         if (!message.reservationId) {
           sendResponse({ ok: false, error: 'Usage reservation required.' });
           return;
@@ -485,8 +496,7 @@ chrome.action.onClicked.addListener(async tab => {
 });
 
 async function usageRequest(action, reservationId) {
-  const session = await getAuthSession();
-  const apiKey = await extpay.ensureApiKey();
+  const { session, apiKey } = await getSnipRequestIdentity();
   const response = await fetch("https://snip-ai-delta.vercel.app/api/usage", {
     method: 'POST',
     headers: {

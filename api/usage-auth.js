@@ -1,18 +1,9 @@
 import { createHash } from 'node:crypto';
 
 async function verifyAnonymousKey(key) {
-  if (!key) return null;
+  if (!key || key.length > 512) return null;
 
-  const response = await fetch(
-    `https://extensionpay.com/extension/snip/api/v2/user?api_key=${encodeURIComponent(key)}`,
-    { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) }
-  );
-
-  if (!response.ok) return null;
-
-  const user = await response.json();
-  if (user.paid) return null;
-
+  // The key is a stable installation identifier, not proof of a paid plan.
   return createHash('sha256').update(key).digest('hex');
 }
 

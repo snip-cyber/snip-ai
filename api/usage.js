@@ -75,10 +75,14 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Invalid reservation." });
     }
 
-    const plan = await verifyPlan(key);
-
     if (token) {
       const userId = await verifyUser(token);
+      let plan = "free";
+      try {
+        plan = await verifyPlan(key);
+      } catch (error) {
+        console.warn("Snip subscription verification unavailable; using Free limits:", error.message);
+      }
       const args = { p_user_id: userId, p_plan: plan };
 
       if (action === "status" || action === "reserve") {
@@ -92,8 +96,8 @@ export default async function handler(req, res) {
       return res.status(200).json(result);
     }
 
-    if (plan !== "free")
-      return res.status(401).json({ error: "Sign in to use your paid subscription." });
+    if (!key || key.length > 512)
+      return res.status(401).json({ error: "Installation identity missing." });
 
     const hash = installHash(key);
     const args = { p_install_hash: hash };
