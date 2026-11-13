@@ -60,7 +60,10 @@ export async function verifyUsageReservation(req) {
     signal: AbortSignal.timeout(10000)
   });
 
-  if (!check.ok) throw new Error('Reservation verification failed');
+  if (!check.ok) {
+    const detail = (await check.text()).slice(0, 500);
+    throw new Error(`Reservation verification failed (${check.status}): ${detail}`);
+  }
 
   const rows = await check.json();
   if (!Array.isArray(rows) || rows.length !== 1) {
