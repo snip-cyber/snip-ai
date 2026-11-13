@@ -2,7 +2,7 @@ import { verifyUsageReservation } from "./usage-auth.js";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 import findHandler from "./find.js";
 import {
   extractFinancialRows,
@@ -261,7 +261,7 @@ export default async function handler(req, res) {
         error.statusCode = 400;
         throw error;
       }
-      response = await fetch(requestUrl, {
+      response = await undiciFetch(requestUrl, {
         redirect: "manual",
         dispatcher,
         signal: controller.signal,
