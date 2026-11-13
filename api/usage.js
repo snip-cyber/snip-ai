@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
-const URL = process.env.SUPABASE_URL;
-const ANON = process.env.SUPABASE_ANON_KEY;
-const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const URL = (process.env.SUPABASE_URL || "").trim();
+const ANON = (process.env.SUPABASE_ANON_KEY || "").trim();
+const SERVICE = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
 async function rpc(name, body) {
   const response = await fetch(`${URL}/rest/v1/rpc/${name}`, {
