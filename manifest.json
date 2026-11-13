@@ -12,7 +12,7 @@
   "host_permissions": [
     "<all_urls>",
     "https://extensionpay.com/*",
-    "https://snip-ai-delta.vercel.app/*",
+    "https://snip-ai-omega.vercel.app/*",
     "https://zkkmgrsrchnwvijeyyan.supabase.co/*"
   ],
   "background": {

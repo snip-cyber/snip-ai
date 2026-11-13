@@ -1,5 +1,5 @@
 (() => {
-  const API = 'https://snip-ai-delta.vercel.app/api/pdf-find';
+  const API = 'https://snip-ai-omega.vercel.app/api/pdf-find';
   const $ = id => document.getElementById(id);
   const params = new URLSearchParams(location.search);
   let pdfUrl = params.get('url') || '';
