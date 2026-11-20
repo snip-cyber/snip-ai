@@ -945,7 +945,12 @@
         return;
       }
       const consumed=await send({type:'SNIP_USAGE_COMMIT', reservationId});
-      if(!consumed?.ok||consumed.consumed===false){$('status').textContent='Your Snip limit was reached.';$('upgrade').hidden=false;return;}
+      if(!consumed?.ok||consumed.consumed===false){
+        if(reservationId) await send({type:'SNIP_USAGE_RELEASE', reservationId}).catch(()=>{});
+        $('status').textContent='Your Snip limit was reached.';
+        $('upgrade').hidden=false;
+        return;
+      }
       $('usage').textContent=usageText(consumed);
       await savePdfHighlight(app, selected.text, highlight.matchedPage || page, selected.quote || highlight.query);
       $('status').textContent = `Opened page ${highlight.matchedPage || page} and highlighted the matching passage.`;
@@ -983,7 +988,7 @@
         throw new Error(result?.error || "Could not create the Executive Brief.");
       const data = result.data;
       const consumed = await send({ type: "SNIP_USAGE_COMMIT", reservationId });
-      if (!consumed?.ok) throw new Error(consumed?.error || "Could not confirm usage.");
+      if (!consumed?.ok || consumed.consumed === false) throw new Error(consumed?.error || "Could not confirm usage.");
       $("usage").textContent = usageText(consumed);
       output.textContent = data.brief;
       panel.hidden = false;

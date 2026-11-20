@@ -364,7 +364,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
           },
           body: JSON.stringify({ question: message.question, url: message.url, reservation_id: message.reservationId }),
-          signal: AbortSignal.timeout(60000)
+          signal: AbortSignal.timeout(100000)
         });
         const data = await response.json().catch(() => ({}));
         sendResponse(response.ok ? { ok: true, data } : { ok: false, error: data.error || 'PDF search failed.' });
