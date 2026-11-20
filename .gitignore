@@ -1,2 +1,5 @@
 node_modules
 coverage/
+.vercel
+.env*
+/m-and-s-annual-report-and-financial-statements-2026.pdf

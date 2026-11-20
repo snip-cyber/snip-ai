@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Snip \u2014 Find It In Context",
-  "version": "2.3.71",
+  "name": "Snip — Find It In Context",
+  "version": "2.4.1",
   "description": "Search webpages and PDFs, jump to relevant passages, and reuse a local PDF text index.",
   "permissions": [
     "activeTab",
@@ -12,8 +12,8 @@
   "host_permissions": [
     "<all_urls>",
     "https://extensionpay.com/*",
-    "https://snip-chi.vercel.app/*",
-    "https://zkkmgrsrchnwvijeyyan.supabase.co/*"
+    "https://snip-ai-omega.vercel.app/*",
+    "https://xukvqizvofbafzxplnoh.supabase.co/*"
   ],
   "background": {
     "service_worker": "background.js"

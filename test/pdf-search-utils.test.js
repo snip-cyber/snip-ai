@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   classifyFinancialSection,
   extractFinancialRows,
+  extractFinancialRowsFromItems,
   extractPageLines,
   selectPrimaryFinancialEvidence
 } from "../api/pdf-search-utils.js";
@@ -211,4 +212,104 @@ test("does not split a label and its numeric value into separate columns", () =>
   ]);
 
   assert.deepEqual(lines, ["Total due $1,250.00"]);
+});
+
+
+test("maps interleaved M&S 2026 statement headers to the correct cash values", () => {
+  const items = [];
+  const add = (str, x, y, width = str.length * 5) =>
+    items.push({ str, width, transform: [1, 0, 0, 1, x, y] });
+
+  add("CONSOLIDATED STATEMENT OF FINANCIAL POSITION", 54, 600);
+  add("29 March", 328.6, 494.3);
+  add("30 March", 379.4, 494.3);
+  add("28 March", 276.7, 486.3);
+  add("2025", 342.4, 486.3);
+  add("2024", 393.3, 486.3);
+  add("2026", 290.9, 478.3);
+  add("Cash and cash equivalents", 53.9, 211, 190);
+  add("18", 250, 211);
+  add("997.2", 284.3, 211);
+  add("864.5", 334.9, 211);
+  add("1,022.4", 380.8, 211);
+
+  const rows = extractFinancialRowsFromItems(items, 116);
+  for (const [year, answer, period] of [
+    ["2026", "997.2", "28 March 2026"],
+    ["2025", "864.5", "29 March 2025"],
+    ["2024", "1,022.4", "30 March 2024"]
+  ]) {
+    const result = selectPrimaryFinancialEvidence(
+      `What were cash and cash equivalents in ${year}?`, rows
+    );
+    assert.ok(result, `Expected a result for ${year}`);
+    assert.equal(result.answer, answer);
+    assert.equal(result.period, period);
+    assert.equal(result.row.page, 116);
+  }
+  assert.equal(
+    selectPrimaryFinancialEvidence(
+      "What were cash and cash equivalents in 2023?", rows
+    ),
+    null
+  );
+});
+
+test("extracts M&S Group net debt for FY2026 and FY2025 without using the Change column", () => {
+  const rows = extractFinancialRows([
+    "FINANCIAL REVIEW",
+    "Net debt",
+    "Group net debt increased £632.0m since last year primarily driven by the increase in lease liabilities.",
+    "52 weeks ended",
+    "28 Mar 26",
+    "£m",
+    "29 Mar 25",
+    "£m",
+    "Change vs",
+    "2024/25",
+    "£m",
+    "Group net debt(2,411.8)(1,779.8)(632.0)"
+  ].join("\n"), 117);
+
+  assert.equal(rows.length, 1);
+
+  const current = selectPrimaryFinancialEvidence(
+    "What was Group net debt in FY2026?", rows
+  );
+  assert.equal(current?.answer, "£2,411.8m");
+  assert.equal(current?.period, "28 March 2026");
+  assert.equal(current?.row.page, 117);
+  assert.equal(current?.sourceQuote, "Group net debt(2,411.8)(1,779.8)(632.0)");
+
+  const comparative = selectPrimaryFinancialEvidence(
+    "What was Group net debt in FY2025?", rows
+  );
+  assert.equal(comparative?.answer, "£1,779.8m");
+  assert.equal(comparative?.period, "29 March 2025");
+
+  assert.equal(
+    selectPrimaryFinancialEvidence("What was Group net debt in FY2024?", rows),
+    null
+  );
+});
+
+test("does not shortcut explanatory Group net debt questions to a financial row", () => {
+  const rows = extractFinancialRows([
+    "FINANCIAL REVIEW",
+    "Net debt",
+    "52 weeks ended",
+    "28 Mar 26",
+    "£m",
+    "29 Mar 25",
+    "£m",
+    "Change vs",
+    "2024/25",
+    "£m",
+    "Group net debt(2,411.8)(1,779.8)(632.0)"
+  ].join("\n"), 117);
+
+  assert.equal(
+    selectPrimaryFinancialEvidence("Why did Group net debt increase?", rows),
+    null
+  );
 });

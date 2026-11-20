@@ -9,9 +9,17 @@
     const existing = document.getElementById(ROOT_ID);
     existing?.__cleanupPlanSync?.();
     existing?.remove();
+    activeRoot = null;
   }
 
   function openPrompt() {
+    const existing = document.getElementById(ROOT_ID);
+    if (existing?.isConnected) {
+      activeRoot = existing.shadowRoot;
+      existing.shadowRoot?.querySelector(".snip-input")?.focus();
+      return;
+    }
+
     removeRoot();
 
     const host = document.createElement("div");
@@ -174,6 +182,8 @@
             : result?.plan === "pro"
               ? "Pro plan active · 500 searches/month."
               : "Payment confirmed.";
+        }).catch(() => {
+          if (root.isConnected && status) status.textContent = "Payment confirmed. Could not refresh plan status.";
         });
       }
     });
@@ -184,8 +194,8 @@
     });
 
     input.focus();
-    refreshAuth();
-    const syncPlanState = () => { if (root.isConnected) refreshUsage(root); };
+    refreshAuth().catch(() => {});
+    const syncPlanState = () => { if (root.isConnected) refreshUsage(root).catch(() => {}); };
     host.__planSyncInterval = setInterval(syncPlanState, 5000);
     window.addEventListener("focus", syncPlanState);
     document.addEventListener("visibilitychange", syncPlanState);
@@ -241,7 +251,7 @@
       if (!root.isConnected) return;
       if (!result?.ok) {
         status.textContent = result?.error || "Authentication failed. Please try again.";
-        if (mainStatus) mainStatus.textContent = status.textContent;
+
         return;
       }
       if (mode === "signup") {
@@ -271,7 +281,7 @@
     } catch (error) {
       if (root.isConnected) {
         status.textContent = error?.message || "Authentication failed. Check your connection and try again.";
-        if (mainStatus) mainStatus.textContent = status.textContent;
+
       }
     } finally {
       if (root.isConnected) {
@@ -325,7 +335,7 @@
     logout.hidden = !loggedIn;
     manage.hidden = true;
     button.disabled = false;
-    refreshUsage(activeRoot);
+    refreshUsage(activeRoot).catch(() => {});
   }
 
   async function refreshAuth() {
@@ -340,13 +350,21 @@
 
   function sendRuntimeMessage(message) {
     return new Promise(resolve => {
-      chrome.runtime.sendMessage(message, response => {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: chrome.runtime.lastError.message });
-          return;
-        }
-        resolve(response || { ok: false, error: "No response" });
-      });
+      try {
+        chrome.runtime.sendMessage(message, response => {
+          try {
+            if (chrome.runtime.lastError) {
+              resolve({ ok: false, error: chrome.runtime.lastError.message });
+              return;
+            }
+            resolve(response || { ok: false, error: "No response" });
+          } catch (error) {
+            resolve({ ok: false, error: error?.message || "Extension context unavailable." });
+          }
+        });
+      } catch (error) {
+        resolve({ ok: false, error: error?.message || "Extension context unavailable." });
+      }
     });
   }
 
@@ -1072,14 +1090,20 @@
       payloadChars += block.text.length;
     }
 
+    let reservationId = null;
     try {
+      const reservation = await sendRuntimeMessage({ type: "SNIP_USAGE_RESERVE" });
+      if (!reservation?.ok || !reservation.reservation_id) { status.textContent = reservation?.error || "Sign in to reserve a Snip search."; root.querySelector(".snip-upgrade").hidden = false; button.disabled = false; return; }
+      reservationId = reservation.reservation_id;
+
       async function requestEvidence(blocks) {
         // Network requests go through the MV3 service worker, not the page-origin
         // content script, so host permissions—not the website's CORS policy—apply.
         const result = await sendRuntimeMessageWithTimeout({
           type: "SNIP_BACKEND_FIND",
           question: query,
-          blocks
+          blocks,
+          reservationId
         }, 35000);
         if (!result?.ok) throw new Error(result?.error || "Snip could not reach its AI service.");
         return result.data || {};
@@ -1129,6 +1153,7 @@
       }
 
       if (evidenceList.length === 0) {
+        if (reservationId) await sendRuntimeMessage({ type: "SNIP_USAGE_RELEASE", reservationId }).catch(() => {});
         status.textContent = "I couldn't locate the exact text on this page.";
         button.disabled = false;
         return;
@@ -1211,8 +1236,9 @@
           block: "center"
         });
 
-        const consumed = await sendRuntimeMessage({ type: "SNIP_CONSUME_USAGE" });
+        const consumed = await sendRuntimeMessage({ type: "SNIP_USAGE_COMMIT", reservationId });
         if (!consumed?.ok || consumed.consumed === false) {
+          if (reservationId) await sendRuntimeMessage({ type: "SNIP_USAGE_RELEASE", reservationId }).catch(() => {});
           status.textContent = "Your Snip limit was reached. Choose a plan to continue.";
           root.querySelector(".snip-upgrade").hidden = false;
           button.disabled = false;
@@ -1234,6 +1260,7 @@
         button.disabled = false;
         button.textContent = "Find again";
       } else {
+        if (reservationId) await sendRuntimeMessage({ type: "SNIP_USAGE_RELEASE", reservationId });
         // The API guarantees verbatim evidence, so try a final pass against
         // the block's own visible text before giving up. This handles DOM
         // differences caused by citation widgets, links, and nested markup.
@@ -1263,6 +1290,7 @@
         button.disabled = false;
       }
     } catch (error) {
+      if (reservationId) await sendRuntimeMessage({ type: "SNIP_USAGE_RELEASE", reservationId }).catch(() => {});
       console.error("Snip search error:", error);
       const message = String(error?.message || "");
       if (/Failed to fetch|NetworkError|Load failed/i.test(message)) {

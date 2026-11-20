@@ -9,8 +9,8 @@ const PRO_MONTHLY_LIMIT = 500;
 const PRO_PLAN = 'Pro';
 const UNLIMITED_PLAN = 'Unlimited';
 
-const SUPABASE_URL = 'https://zkkmgrsrchnwvijeyyan.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpra21ncnNyY2hud3ZpamV5eWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNjI2NzgsImV4cCI6MjEwNzYzODY3OH0.LYmjxYwnSlZhcd3P45UTFmxpwmCufTVgdohFkq3m2NA';
+const SUPABASE_URL = 'https://xukvqizvofbafzxplnoh.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_EXgBb4_2j6iKcKITBOjfpg_T7hhIcNk';
 
 async function supabaseAuth(path, options = {}) {
   const controller = new AbortController();
@@ -77,6 +77,20 @@ async function getAuthSession() {
     console.warn('Snip session refresh failed temporarily; preserving session for retry:', error?.message || error);
     return session;
   }
+}
+
+async function getSnipRequestIdentity() {
+  const session = await getAuthSession();
+  if (session?.access_token) {
+    return { session, apiKey: await extpay.ensureApiKey() };
+  }
+  const stored = await chrome.storage.local.get("snip_install_id");
+  let apiKey = stored.snip_install_id;
+  if (typeof apiKey !== "string" || apiKey.length < 16) {
+    apiKey = crypto.randomUUID();
+    await chrome.storage.local.set({ snip_install_id: apiKey });
+  }
+  return { session: null, apiKey };
 }
 
 async function authSignup(email, password) {
@@ -154,38 +168,7 @@ function accountUsageKey(plan, session) {
 }
 
 async function getUsage() {
-  const session = await getAuthSession();
-  if (!session) {
-    const periodKey = localDayKey();
-    const stored = await chrome.storage.local.get('snip_anon_usage');
-    const record = stored.snip_anon_usage;
-    const used = typeof record === 'object' && record?.periodKey === periodKey && Number.isFinite(record.used)
-      ? Math.max(0, record.used)
-      : (Number.isFinite(record) ? Math.max(0, record) : 0);
-    return { plan: 'anonymous', limit: ANON_FREE_LIMIT, period: 'day', used, remaining: Math.max(0, ANON_FREE_LIMIT - used), authenticated: false };
-  }
-
-  const entitlement = await getEntitlement();
-  if (entitlement.plan === 'unlimited') {
-    return { ...entitlement, used: 0, remaining: null, authenticated: true };
-  }
-
-  const key = accountUsageKey(entitlement.plan, session);
-  const periodKey = entitlement.plan === 'pro' ? localMonthKey() : localDayKey();
-  const stored = await chrome.storage.local.get(key);
-  const record = stored[key];
-
-  const used = record?.periodKey === periodKey && Number.isFinite(record.used)
-    ? Math.max(0, record.used)
-    : 0;
-
-  return {
-    ...entitlement,
-    used,
-    remaining: Math.max(0, entitlement.limit - used),
-    periodKey,
-    authenticated: true
-  };
+  return usageRequest("status");
 }
 
 async function consumeUsage() {
@@ -262,7 +245,7 @@ async function openPayment(plan) {
   await extpay.openPaymentPage(nickname || undefined);
 }
 
-async function requestSnipEvidence(question, blocks) {
+async function requestSnipEvidence(question, blocks, reservationId) {
   if (typeof question !== 'string' || !question.trim() || question.length > 1000) {
     throw new Error('Please enter a shorter, non-empty question.');
   }
@@ -285,13 +268,19 @@ async function requestSnipEvidence(question, blocks) {
   });
   if (totalChars > 60000) throw new Error('This page is too large to search at once. Try a shorter page or a more specific question.');
 
+  if (!reservationId) throw new Error("A valid usage reservation is required.");
   const controller = new AbortController();
+  const { session, apiKey } = await getSnipRequestIdentity();
   const timeoutId = setTimeout(() => controller.abort(), 30000);
   try {
-    const response = await fetch('https://sinister-graveyard-qv6wvpp45jvvh9vpr-8000.app.github.dev/api/v1/extract-pdf', {
+    const response = await fetch('https://snip-ai-omega.vercel.app/api/find', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: question.trim(), blocks: safeBlocks }),
+      headers: {
+        'Content-Type': 'application/json',
+        "X-Snip-ExtensionPay-Key": apiKey,
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+      },
+      body: JSON.stringify({ question: question.trim(), blocks: safeBlocks, reservation_id: reservationId || null }),
       signal: controller.signal,
       cache: 'no-store'
     });
@@ -318,7 +307,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
       if (message?.type === 'SNIP_BACKEND_FIND') {
-        const data = await requestSnipEvidence(message.question, message.blocks);
+        const data = await requestSnipEvidence(message.question, message.blocks, message.reservationId);
         sendResponse({ ok: true, data });
         return;
       }
@@ -361,6 +350,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, plan: 'free' });
         return;
       }
+      if (message?.type === 'SNIP_BACKEND_PDF_FIND') {
+        const { session, apiKey } = await getSnipRequestIdentity();
+        if (!message.reservationId) {
+          sendResponse({ ok: false, error: 'Usage reservation required.' });
+          return;
+        }
+        const response = await fetch('https://snip-ai-omega.vercel.app/api/pdf-find', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            "X-Snip-ExtensionPay-Key": apiKey,
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          },
+          body: JSON.stringify({ question: message.question, url: message.url, reservation_id: message.reservationId }),
+          signal: AbortSignal.timeout(100000)
+        });
+        const data = await response.json().catch(() => ({}));
+        sendResponse(response.ok ? { ok: true, data } : { ok: false, error: data.error || 'PDF search failed.' });
+        return;
+      }
+      if (message?.type === 'SNIP_BACKEND_PDF_SUMMARY') {
+        const { session, apiKey } = await getSnipRequestIdentity();
+        if (!message.reservationId) {
+          sendResponse({ ok: false, error: 'Usage reservation required.' });
+          return;
+        }
+        const response = await fetch('https://snip-ai-omega.vercel.app/api/summary', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            "X-Snip-ExtensionPay-Key": apiKey,
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          },
+          body: JSON.stringify({ url: message.url, reservation_id: message.reservationId }),
+          signal: AbortSignal.timeout(60000)
+        });
+        const data = await response.json().catch(() => ({}));
+        sendResponse(response.ok ? { ok: true, data } : { ok: false, error: data.error || 'Executive Brief failed.' });
+        return;
+      }
+      if (message?.type === 'SNIP_USAGE_RESERVE') {
+        sendResponse({ ok: true, ...(await usageRequest("reserve")) });
+        return;
+      }
+      if (message?.type === 'SNIP_USAGE_COMMIT') {
+        if (!message.reservationId) {
+          sendResponse({ ok: false, error: "Usage reservation required." });
+          return;
+        }
+        const result = await usageRequest("commit", message.reservationId);
+        sendResponse({ ok: true, ...result });
+        return;
+      }
+      if (message?.type === 'SNIP_USAGE_RELEASE') {
+        if (message.reservationId) await usageRequest("release", message.reservationId);
+        sendResponse({ ok: true });
+        return;
+      }
       if (message?.type === 'SNIP_CONSUME_USAGE') {
         sendResponse({ ok: true, ...(await consumeUsage()) });
         return;
@@ -397,7 +444,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       sendResponse({ ok: false, error: 'Unknown message' });
     } catch (error) {
-      console.error('Snip background error:', error);
+      console.error(
+        'Snip background error in message:',
+        message?.type,
+        error?.stack || error
+      );
       sendResponse({ ok: false, error: error?.message || 'Something went wrong.' });
     }
   })();
@@ -443,3 +494,20 @@ chrome.action.onClicked.addListener(async tab => {
   }
   await openWebSnip(tab.id);
 });
+
+async function usageRequest(action, reservationId) {
+  const { session, apiKey } = await getSnipRequestIdentity();
+  const response = await fetch("https://snip-ai-omega.vercel.app/api/usage", {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      "X-Snip-ExtensionPay-Key": apiKey
+    },
+    body: JSON.stringify({ action, reservation_id: reservationId || "" }),
+    cache: "no-store"
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Usage request failed.");
+  return data;
+}

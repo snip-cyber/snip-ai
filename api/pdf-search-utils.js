@@ -1,6 +1,11 @@
 const FINANCIAL_LABELS = [
+"group net debt",
 "cash and cash equivalents at beginning and end of year",
 "cash and cash equivalents",
+"closing net cash",
+"equity dividends paid",
+"cash generated from operations",
+"net cash inflow from operating activities",
 "total comprehensive income",
 "profit before tax",
 "profit for the year",
@@ -42,6 +47,14 @@ return "Reconciliation";
 
 if (/\b(?:financial review|composition of group net debt)\b/i.test(text)) {
 return "Financial review";
+}
+
+if (/\bconsolidated income statement\b/i.test(text)) {
+return "Primary consolidated income statement";
+}
+
+if (/\bconsolidated statement of cash flows\b/i.test(text)) {
+return "Primary consolidated statement of cash flows";
 }
 
 if (
@@ -221,73 +234,244 @@ new RegExp(`\\b${MONTH_PATTERN}\\b`, "i").test(line)
 }
 
 function periodsFromHeader(header) {
-const years = [...String(header).matchAll(/\b20\d{2}\b/g)]
-.map(match => match[0]);
-
-const dates = [
-...String(header).matchAll(
-new RegExp(`\\b\\d{1,2}\\s+${MONTH_PATTERN}\\b`, "gi")
-)
-].map(match => match[0]);
-
+const text = String(header || "");
+const shortMonths = {
+jan: "January", feb: "February", mar: "March", apr: "April",
+may: "May", jun: "June", jul: "July", aug: "August",
+sep: "September", oct: "October", nov: "November", dec: "December"
+};
+const compactDates = [...text.matchAll(
+  /\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{2}|\d{4})\b/gi
+)];
+if (compactDates.length) {
+  return compactDates.map(match => {
+    const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+    return `${match[1]} ${shortMonths[match[2].toLowerCase()]} ${year}`;
+  });
+}
+const years = [...text.matchAll(/\b20\d{2}\b/g)].map(match => match[0]);
+const dates = [...text.matchAll(
+  new RegExp(`\\b\\d{1,2}\\s+${MONTH_PATTERN}\\b`, "gi")
+)].map(match => match[0]);
 const periods = [];
-
-// Do not deduplicate repeated periods: consolidated and company statements
-// may show the same reporting dates in separate columns.
-for (let index = 0; index < Math.min(years.length, dates.length); index += 1) {
-periods.push(`${dates[index]} ${years[index]}`);
+for (let i = 0; i < Math.min(years.length, dates.length); i += 1) {
+  periods.push(`${dates[i]} ${years[i]}`);
 }
-
-if (!periods.length) {
-for (const year of years) periods.push(year);
-}
-
+if (!periods.length) for (const year of years) periods.push(year);
 return periods;
+}
+
+export function extractFinancialRowsFromItems(items, page, indexOffset = 0) {
+  const lines = extractPageLines(items);
+  const rows = extractFinancialRows(lines.join("\n"), page, indexOffset);
+  if (!rows.length) return rows;
+
+  const positioned = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const text = cleanLine(item?.str);
+    const x = Number(item?.transform?.[4]);
+    const y = Number(item?.transform?.[5]);
+    if (!text || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+    let line = positioned.find(candidate => Math.abs(candidate.y - y) < 1.5);
+    if (!line) {
+      line = { y, items: [] };
+      positioned.push(line);
+    }
+    line.items.push({ x, width: Number(item.width) || 0, text });
+  }
+
+  for (const line of positioned) {
+    line.items.sort((a, b) => a.x - b.x);
+    line.text = line.items.map(item => item.text).join(" ");
+  }
+
+  for (const row of rows) {
+    const labelLine = positioned.find(line =>
+      normalized(line.text).includes(row.label)
+    );
+    if (!labelLine) continue;
+
+    const labelItem = labelLine.items.find(item =>
+      normalized(item.text).includes(row.label)
+    );
+    if (!labelItem) continue;
+
+    const headingPattern = row.section.includes("income statement")
+      ? /\bconsolidated\s+income\s+statement\b/i
+      : row.section.includes("cash flows")
+        ? /\bconsolidated\s+statement\s+of\s+cash\s+flows\b/i
+        : /\b(?:consolidated|group|company|parent company)\s+(?:statement of financial position|balance sheet)\b/i;
+    const headingLine = positioned.find(line => headingPattern.test(line.text));
+    if (!headingLine || headingLine.y <= labelLine.y) continue;
+
+    const headerItems = positioned
+      .filter(line => line.y > labelLine.y && line.y < headingLine.y)
+      .flatMap(line => line.items);
+
+    const datePattern = new RegExp(
+      `\\b\\d{1,2}\\s+${MONTH_PATTERN}\\b`, "i"
+    );
+    const dates = headerItems.filter(item => datePattern.test(item.text));
+    const years = headerItems.filter(item => /\b20\d{2}\b/.test(item.text));
+
+    const columns = [];
+    const usedYears = new Set();
+
+    for (const date of dates) {
+      const yearMatches = years
+        .map((year, index) => ({
+          year,
+          index,
+          distance: Math.abs(year.x - date.x)
+        }))
+        .filter(entry => !usedYears.has(entry.index))
+        .sort((a, b) => a.distance - b.distance);
+
+      if (!yearMatches.length || yearMatches[0].distance > 60) continue;
+
+      const match = yearMatches[0];
+      usedYears.add(match.index);
+      const year = match.year.text.match(/\b20\d{2}\b/)[0];
+      const dateText = date.text.match(datePattern)[0];
+
+      columns.push({
+        x: (date.x + match.year.x) / 2,
+        period: `${dateText} ${year}`
+      });
+    }
+
+    const numericItems = labelLine.items.filter(item => {
+  if (item.x <= labelItem.x + labelItem.width) return false;
+
+  const value = item.text.replace(/\s+/g, "");
+
+  if (!/^(?:\(?-?\d[\d,]*(?:\.\d+)?\)?|[—–-])$/.test(value)) {
+    return false;
+  }
+
+  return columns.some(column => Math.abs(item.x - column.x) <= 60);
+});
+
+    const valueGroups = [];
+    for (const item of numericItems) {
+      const previous = valueGroups[valueGroups.length - 1];
+      if (previous && item.x - (previous.lastX + previous.lastWidth) <= 10) {
+        previous.parts.push(item.text);
+        previous.lastX = item.x;
+        previous.lastWidth = item.width;
+      } else {
+        valueGroups.push({
+          x: item.x,
+          lastX: item.x,
+          lastWidth: item.width,
+          parts: [item.text]
+        });
+      }
+    }
+
+    const usedValues = new Set();
+    const aligned = [];
+
+    for (const column of columns.sort((a, b) => a.x - b.x)) {
+      const matches = valueGroups
+        .map((group, index) => ({
+          group,
+          index,
+          distance: Math.abs(group.x - column.x)
+        }))
+        .filter(entry => !usedValues.has(entry.index))
+        .sort((a, b) => a.distance - b.distance);
+
+      if (!matches.length || matches[0].distance > 60) continue;
+
+      const match = matches[0];
+      usedValues.add(match.index);
+      const value = match.group.parts.join("")
+        .replace(/(\d)\s*\.\s*(\d)/g, "$1.$2");
+
+      aligned.push({ period: column.period, value });
+    }
+
+    if (aligned.length) {
+      row.coordinatePeriods = aligned.map(item => item.period);
+      row.coordinateValues = aligned.map(item => item.value);
+    }
+  }
+
+  return rows;
 }
 
 export function extractFinancialRows(pageText, page, indexOffset = 0) {
 const lines = String(pageText || "")
-.split(/\n+/)
-.map(cleanLine)
-.filter(Boolean);
+  .split(/\n+/)
+  .map(cleanLine)
+  .filter(Boolean);
 
 const section = classifyFinancialSection(lines.join("\n"));
+const rows = [];
+
+if (section === "Financial review") {
+  const headingIndex = lines.findIndex(line =>
+    /^net debt$/i.test(normalized(line))
+  );
+
+  if (headingIndex < 0) return [];
+
+  const rowIndex = lines.findIndex((line, index) =>
+    index > headingIndex &&
+    /^group net debt\s*(?:\(\s*\d|[-+]?\s*\d|[—–-])/i.test(line)
+  );
+
+  if (rowIndex < 0) return [];
+
+  const context = lines.slice(headingIndex + 1, rowIndex).join(" | ");
+  const row = lines[rowIndex];
+
+  return [{
+    id: `pdf-${page}-${indexOffset}`,
+    index: indexOffset,
+    label: "group net debt",
+    text: row,
+    page,
+    section,
+    periodContext: context
+  }];
+}
 
 if (!section.startsWith("Primary ")) return [];
 
-const headingPattern = section.includes("company")
-? /\b(?:company|parent company)\s+(?:statement of financial position|balance sheet)(?:\s+continued)?\b/i
-: /\b(?:consolidated|group)\s+(?:statement of financial position|balance sheet)(?:\s+continued)?\b/i;
+const headingPattern = section.includes("income statement")
+? /\bconsolidated\s+income\s+statement\b/i
+: section.includes("cash flows")
+  ? /\bconsolidated\s+statement\s+of\s+cash\s+flows\b/i
+  : section.includes("company")
+    ? /\b(?:company|parent company)\s+(?:statement of financial position|balance sheet)(?:\s+continued)?\b/i
+    : /\b(?:consolidated|group)\s+(?:statement of financial position|balance sheet)(?:\s+continued)?\b/i;
 
 const context = periodHeader(lines, headingPattern);
-const rows = [];
 
 for (const line of lines) {
-const lineText = normalized(line);
+  const lineText = normalized(line);
+  const label = FINANCIAL_LABELS.find(candidate =>
+    candidate !== "group net debt" &&
+    (lineText === candidate || lineText.startsWith(`${candidate} `))
+  );
+  if (!label) continue;
 
-const label = FINANCIAL_LABELS.find(candidate =>
-  lineText === candidate || lineText.startsWith(`${candidate} `)
-);
+  const remainder = lineText.slice(label.length);
+  if (!/[\d—–-]/.test(remainder)) continue;
 
-if (!label) continue;
-
-const remainder = lineText.slice(label.length);
-
-// Require a numeric or dash-like cell after the label.
-if (!/[\d—–-]/.test(remainder)) continue;
-
-const index = indexOffset + rows.length;
-
-rows.push({
-  id: `pdf-${page}-${index}`,
-  index,
-  label,
-  text: line,
-  page,
-  section,
-  periodContext: context
-});
-
+  const index = indexOffset + rows.length;
+  rows.push({
+    id: `pdf-${page}-${index}`,
+    index,
+    label,
+    text: line,
+    page,
+    section,
+    periodContext: context
+  });
 }
 
 return rows;
@@ -317,7 +501,7 @@ return String(question || "").match(
 
 function valuesFromRow(row) {
 const start = normalized(row.text).indexOf(row.label) + row.label.length;
-const tail = row.text.slice(start);
+const tail = row.text.slice(start).replace(/(\d)\s*\.\s*(\d)/g, "$1.$2");
 
 // Capture whole numeric cells, including thousands separators and decimals.
 return [
@@ -344,6 +528,44 @@ export function selectPrimaryFinancialEvidence(question, rows) {
 const label = requestedFinancialLabel(question);
 if (!label) return null;
 
+if (label === "group net debt") {
+  const year = requestedYear(question);
+  const candidates = (Array.isArray(rows) ? rows : [])
+    .filter(row => row.label === "group net debt" && row.section === "Financial review")
+    .sort((a, b) => a.page - b.page || a.index - b.index);
+
+  for (const row of candidates) {
+    const periods = periodsFromHeader(row.periodContext);
+    if (periods.length !== 2) continue;
+
+    const years = periods.map(period => period.match(/\b20\d{2}\b/)?.[0]);
+    if (years.some(value => !value) || (year && !years.includes(year))) continue;
+
+    const values = valuesFromRow(row);
+    // M&S table: two dated columns, then a separate Change column.
+    if (values.length !== 3) continue;
+
+    const valueIndex = year ? years.indexOf(year) : 0;
+    const raw = values[valueIndex];
+    if (!raw || /^[—–-]$/.test(raw)) continue;
+
+    const amount = raw.replace(/[()\s]/g, "");
+    if (!/^\d[\d,]*(?:\.\d+)?$/.test(amount)) continue;
+
+    const answer = /£m\b/i.test(row.periodContext)
+      ? `£${amount}m`
+      : amount;
+
+    return {
+      answer,
+      period: periods[valueIndex],
+      sourceQuote: row.text,
+      row
+    };
+  }
+  return null;
+}
+
 const candidates = (Array.isArray(rows) ? rows : [])
 .filter(row => row.label === label)
 .filter(row => row.section?.startsWith("Primary "));
@@ -354,18 +576,27 @@ const wantsCompany = /\b(?:company|parent company|parent entity)\b/i.test(questi
 
 const preferredSection = wantsCompany
 ? "Primary company statement of financial position"
-: "Primary consolidated statement of financial position";
+: ["revenue", "turnover", "operating profit", "profit before tax", "profit for the year", "total comprehensive income"].includes(label)
+  ? "Primary consolidated income statement"
+  : ["closing net cash", "equity dividends paid", "cash generated from operations", "net cash inflow from operating activities"].includes(label)
+    ? "Primary consolidated statement of cash flows"
+    : "Primary consolidated statement of financial position";
 
 const preferred = candidates.filter(row => row.section === preferredSection);
 let ranked = preferred.length ? preferred : candidates;
+
+const periodsForRow = row =>
+  Array.isArray(row.coordinatePeriods) &&
+  row.coordinatePeriods.length > 0 &&
+  row.coordinatePeriods.length === row.coordinateValues?.length
+    ? row.coordinatePeriods
+    : periodsFromHeader(row.periodContext);
 
 const year = requestedYear(question);
 
 if (year) {
 const matchingYear = ranked.filter(row =>
-periodsFromHeader(row.periodContext).some(period =>
-period.includes(year)
-)
+periodsForRow(row).some(period => period.includes(year))
 );
 
 if (!matchingYear.length) return null;
@@ -377,12 +608,19 @@ ranked = matchingYear;
 ranked.sort((a, b) => a.page - b.page || a.index - b.index);
 
 const row = ranked[0];
-const periods = periodsFromHeader(row.periodContext);
+const coordinateAligned =
+  Array.isArray(row.coordinatePeriods) &&
+  row.coordinatePeriods.length > 0 &&
+  row.coordinatePeriods.length === row.coordinateValues?.length;
+
+const periods = periodsForRow(row);
 const years = periods
 .map(period => period.match(/\b20\d{2}\b/)?.[0])
 .filter(Boolean);
 
-const values = valuesFromRow(row);
+const values = coordinateAligned
+  ? row.coordinateValues
+  : valuesFromRow(row);
 
 // Do not guess if the extracted period columns and numeric cells cannot
 // be aligned reliably. Note numbers may appear before the actual values.
@@ -394,7 +632,11 @@ years.length !== periods.length
 return null;
 }
 
-const periodValues = values.slice(-periods.length);
+const periodValues = coordinateAligned
+  ? values
+  : values.length === periods.length + 1
+    ? values.slice(1)
+    : values.slice(-periods.length);
 const selectedYear = year || years[0] || null;
 const valueIndex = selectedYear ? years.indexOf(selectedYear) : 0;
 

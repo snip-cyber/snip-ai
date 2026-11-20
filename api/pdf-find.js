@@ -1,23 +1,25 @@
+import { verifyUsageReservation } from "./usage-auth.js";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 import findHandler from "./find.js";
 import {
   extractFinancialRows,
+  extractFinancialRowsFromItems,
   extractPageLines,
   isCashPositionLookup,
   selectPrimaryFinancialEvidence
 } from "./pdf-search-utils.js";
 
 const MAX_PDF_BYTES = 15 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 25000;
+const DEFAULT_TIMEOUT_MS = 90000;
 const configuredTimeout = Number(process.env.SNIP_PDF_TIMEOUT_MS);
 const TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout >= 10
   ? Math.min(configuredTimeout, DEFAULT_TIMEOUT_MS)
   : DEFAULT_TIMEOUT_MS;
 
-function unsafeUrl(raw) {
+export function unsafeUrl(raw) {
   try {
     const u = new URL(raw);
     if (!["http:", "https:"].includes(u.protocol) || u.username || u.password) return true;
@@ -91,7 +93,7 @@ function errorStatus(error, fallback = 500) {
   return Number.isInteger(error?.statusCode) ? error.statusCode : fallback;
 }
 
-async function readLimited(response, controller) {
+export async function readLimited(response, controller) {
   const length = Number(response.headers.get("content-length"));
   if (Number.isFinite(length) && length > MAX_PDF_BYTES) {
     controller.abort();
@@ -229,10 +231,10 @@ function isExplicitPrimaryStatementCashQuestion(question) {
   );
 }
 
-export default async function handler(req, res) {
+export default async function handler(req, res, { fetchImpl = undiciFetch } = {}) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Snip-ExtensionPay-Key");
   res.setHeader("Access-Control-Max-Age", "86400");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -247,6 +249,10 @@ export default async function handler(req, res) {
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
+    const reservation = await verifyUsageReservation(req);
+    if (!reservation.ok) return res.status(reservation.status).json({ error: reservation.error });
+
+
     let requestUrl = url;
     let response;
     for (let redirects = 0; redirects <= 3; redirects += 1) {
@@ -255,7 +261,7 @@ export default async function handler(req, res) {
         error.statusCode = 400;
         throw error;
       }
-      response = await fetch(requestUrl, {
+      response = await fetchImpl(requestUrl, {
         redirect: "manual",
         dispatcher,
         signal: controller.signal,
@@ -283,16 +289,18 @@ export default async function handler(req, res) {
     }
 
     let renderedPageNumber = 0;
+    const pageLayouts = new Map();
     const parsePromise = pdfParse(bytes, {
       pagerender: async pageData => {
         renderedPageNumber += 1;
         const content = await pageData.getTextContent();
+        pageLayouts.set(renderedPageNumber, content.items);
         const lines = extractPageLines(content.items);
         return `\n[[SNIP_PAGE_${renderedPageNumber}]]\n${lines.join("\n")}\n`;
       }
     });
     const parsed = await withAbort(parsePromise, controller.signal);
-    const split = String(parsed.text || "").split(/\\[\[SNIP_PAGE_(\d+)\\]\]/g);
+    const split = String(parsed.text || "").split(/\[\[SNIP_PAGE_(\d+)\]\]/g);
     const blocks = [];
     const financialRows = [];
     const pagesWithoutText = [];
@@ -302,7 +310,11 @@ export default async function handler(req, res) {
       const page = Number(split[i]);
       const pageText = split[i + 1] || "";
       pageCount = Math.max(pageCount, page);
-      financialRows.push(...extractFinancialRows(pageText, page, financialRows.length));
+      const pageItems = pageLayouts.get(page);
+      const extractedRows = pageItems
+        ? extractFinancialRowsFromItems(pageItems, page, financialRows.length)
+        : extractFinancialRows(pageText, page, financialRows.length);
+      financialRows.push(...extractedRows);
       const pageBlocks = toBlocks(pageText, page);
       if (!pageBlocks.length) pagesWithoutText.push(page);
       for (const item of pageBlocks) {
@@ -388,6 +400,7 @@ export default async function handler(req, res) {
     const analysisResponse = captureResponse();
     const analysisPromise = findHandler({
       method: "POST",
+      snipInternalVerified: true,
       body: { question, blocks: payloadBlocks },
       headers: {}
     }, analysisResponse);

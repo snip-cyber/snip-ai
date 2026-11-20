@@ -4,7 +4,7 @@
 .snip-row{display:flex;gap:6px}.snip-input{min-width:0;flex:1;padding:9px 11px;border:1px solid #c9c9c9;border-radius:10px;font:inherit;font-size:14px;outline:none;box-sizing:border-box}.snip-input:focus{border-color:#555;box-shadow:0 0 0 3px rgba(0,0,0,.07)}
 .snip-btn{border:0;border-radius:9px;padding:8px 12px;font:inherit;font-size:13px;font-weight:700;cursor:pointer}.snip-btn:disabled{opacity:.55;cursor:wait}.snip-find{background:#111;color:#fff}.snip-close{background:#eee;color:#222;padding-inline:12px}.snip-share{margin-top:6px;background:#eee;color:#222}
 .snip-status{margin:6px 3px 0;font-size:12px;color:#666;min-height:16px}
-.snip-highlight{background:rgba(0,184,208,.28)!important;color:inherit!important;border-radius:3px;padding:1px 2px;box-shadow:0 0 0 2px rgba(0,184,208,.42);scroll-margin-top:35vh}
+.snip-highlight{background:rgba(255,255,0,.28)!important;color:inherit!important;border-radius:3px;padding:1px 2px;box-shadow:0 0 0 2px rgba(255,255,0,.32);scroll-margin-top:35vh}
 @media (max-width:520px){.snip-row{flex-wrap:wrap}.snip-input{flex-basis:100%}.snip-find{flex:1}.snip-close{width:44px}}
 
 
