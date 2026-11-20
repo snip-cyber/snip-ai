@@ -9,8 +9,8 @@ const PRO_MONTHLY_LIMIT = 500;
 const PRO_PLAN = 'Pro';
 const UNLIMITED_PLAN = 'Unlimited';
 
-const SUPABASE_URL = 'https://zkkmgrsrchnwvijeyyan.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpra21ncnNyY2hud3ZpamV5eWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNjI2NzgsImV4cCI6MjEwNzYzODY3OH0.LYmjxYwnSlZhcd3P45UTFmxpwmCufTVgdohFkq3m2NA';
+const SUPABASE_URL = 'https://xukvqizvofbafzxplnoh.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_EXgBb4_2j6iKcKITBOjfpg_T7hhIcNk';
 
 async function supabaseAuth(path, options = {}) {
   const controller = new AbortController();

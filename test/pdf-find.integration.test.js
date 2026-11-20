@@ -54,7 +54,7 @@ const msFixtureConfigured = Boolean(
   Number.isInteger(msExpected.pageCount) && msExpected.pageCount > 0
 );
 
-test("PDF endpoint answers the M&S FY2025 cash question from the primary statement", {
+test("PDF endpoint answers the M&S FY2026 cash question from the primary statement", {
   // A real PDF must be supplied with its verified expected values. Avoid stale
   // page/value assertions that could accidentally validate a different report edition.
   skip: !msFixtureConfigured
@@ -77,12 +77,12 @@ test("PDF endpoint answers the M&S FY2025 cash question from the primary stateme
     await pdfFindHandler({
       method: "POST",
       body: {
-        url: "https://reports.example.test/ms-fy2025.pdf",
+        url: "https://example.com/ms-fy2026.pdf",
         reservation_id: TEST_RESERVATION,
         question: "What were cash and cash equivalents for FY2026 in the consolidated statement of financial position?"
       },
       headers: { authorization: "Bearer test-token" }
-    }, response);
+    }, response, { fetchImpl: globalThis.fetch });
 
     assert.equal(response.statusCode, 200);
     assert.equal(response.body.answer, msExpected.answer);
@@ -97,12 +97,12 @@ test("PDF endpoint answers the M&S FY2025 cash question from the primary stateme
     await pdfFindHandler({
       method: "POST",
       body: {
-        url: "https://reports.example.test/ms-fy2025.pdf",
+        url: "https://example.com/ms-fy2026.pdf",
         reservation_id: TEST_RESERVATION,
         question: "What were cash and cash equivalents in the FY2023 consolidated statement of financial position?"
       },
       headers: { authorization: "Bearer test-token" }
-    }, absentPeriod);
+    }, absentPeriod, { fetchImpl: globalThis.fetch });
 
     assert.equal(absentPeriod.statusCode, 200);
     assert.equal(absentPeriod.body.answer, null);
@@ -166,7 +166,7 @@ test("validates redirect targets before fetching them", async () => {
   };
   try {
     const response = createResponse();
-    await pdfFindHandler({ method: "POST", body: { url: "https://public.example/report.pdf", reservation_id: TEST_RESERVATION, question: "What is the answer?" }, headers: { authorization: "Bearer test-token" } }, response);
+    await pdfFindHandler({ method: "POST", body: { url: "https://public.example/report.pdf", reservation_id: TEST_RESERVATION, question: "What is the answer?" }, headers: { authorization: "Bearer test-token" } }, response, { fetchImpl: globalThis.fetch });
     assert.equal(response.statusCode, 400);
     assert.deepEqual(requested, ["https://public.example/report.pdf"]);
   } finally { globalThis.fetch = originalFetch; }
@@ -231,7 +231,7 @@ test("allows a globally routable IPv6 PDF URL through URL validation", async () 
       method: "POST",
       body: { url: "https://[2606:4700:4700::1111]/report.pdf", reservation_id: TEST_RESERVATION, question: "What is the answer?" },
       headers: { authorization: "Bearer test-token" }
-    }, response);
+    }, response, { fetchImpl: globalThis.fetch });
     assert.equal(fetchCount, 1);
     assert.equal(response.statusCode, 415);
   } finally {

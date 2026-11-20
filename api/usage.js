@@ -77,12 +77,9 @@ export default async function handler(req, res) {
 
     if (token) {
       const userId = await verifyUser(token);
-      let plan = "free";
-      try {
-        plan = await verifyPlan(key);
-      } catch (error) {
-        console.warn("Snip subscription verification unavailable; using Free limits:", error.message);
-      }
+      const plan = (action === "status" || action === "reserve")
+        ? await verifyPlan(key)
+        : "free";
       const args = { p_user_id: userId, p_plan: plan };
 
       if (action === "status" || action === "reserve") {

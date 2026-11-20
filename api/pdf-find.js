@@ -13,7 +13,7 @@ import {
 } from "./pdf-search-utils.js";
 
 const MAX_PDF_BYTES = 15 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 25000;
+const DEFAULT_TIMEOUT_MS = 90000;
 const configuredTimeout = Number(process.env.SNIP_PDF_TIMEOUT_MS);
 const TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout >= 10
   ? Math.min(configuredTimeout, DEFAULT_TIMEOUT_MS)
@@ -231,7 +231,7 @@ function isExplicitPrimaryStatementCashQuestion(question) {
   );
 }
 
-export default async function handler(req, res) {
+export default async function handler(req, res, { fetchImpl = undiciFetch } = {}) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Snip-ExtensionPay-Key");
@@ -261,7 +261,7 @@ export default async function handler(req, res) {
         error.statusCode = 400;
         throw error;
       }
-      response = await undiciFetch(requestUrl, {
+      response = await fetchImpl(requestUrl, {
         redirect: "manual",
         dispatcher,
         signal: controller.signal,

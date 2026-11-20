@@ -1,6 +1,11 @@
 const FINANCIAL_LABELS = [
+"group net debt",
 "cash and cash equivalents at beginning and end of year",
 "cash and cash equivalents",
+"closing net cash",
+"equity dividends paid",
+"cash generated from operations",
+"net cash inflow from operating activities",
 "total comprehensive income",
 "profit before tax",
 "profit for the year",
@@ -42,6 +47,14 @@ return "Reconciliation";
 
 if (/\b(?:financial review|composition of group net debt)\b/i.test(text)) {
 return "Financial review";
+}
+
+if (/\bconsolidated income statement\b/i.test(text)) {
+return "Primary consolidated income statement";
+}
+
+if (/\bconsolidated statement of cash flows\b/i.test(text)) {
+return "Primary consolidated statement of cash flows";
 }
 
 if (
@@ -221,14 +234,32 @@ new RegExp(`\\b${MONTH_PATTERN}\\b`, "i").test(line)
 }
 
 function periodsFromHeader(header) {
-const years = [...String(header).matchAll(/\b20\d{2}\b/g)].map(match => match[0]);
-const dates = [...String(header).matchAll(new RegExp(`\\b\\d{1,2}\\s+${MONTH_PATTERN}\\b`, "gi"))].map(match => match[0]);
+const text = String(header || "");
+const shortMonths = {
+jan: "January", feb: "February", mar: "March", apr: "April",
+may: "May", jun: "June", jul: "July", aug: "August",
+sep: "September", oct: "October", nov: "November", dec: "December"
+};
+const compactDates = [...text.matchAll(
+  /\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{2}|\d{4})\b/gi
+)];
+if (compactDates.length) {
+  return compactDates.map(match => {
+    const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+    return `${match[1]} ${shortMonths[match[2].toLowerCase()]} ${year}`;
+  });
+}
+const years = [...text.matchAll(/\b20\d{2}\b/g)].map(match => match[0]);
+const dates = [...text.matchAll(
+  new RegExp(`\\b\\d{1,2}\\s+${MONTH_PATTERN}\\b`, "gi")
+)].map(match => match[0]);
 const periods = [];
-for (let index = 0; index < Math.min(years.length, dates.length); index += 1) periods.push(`${dates[index]} ${years[index]}`);
+for (let i = 0; i < Math.min(years.length, dates.length); i += 1) {
+  periods.push(`${dates[i]} ${years[i]}`);
+}
 if (!periods.length) for (const year of years) periods.push(year);
 return periods;
 }
-
 
 export function extractFinancialRowsFromItems(items, page, indexOffset = 0) {
   const lines = extractPageLines(items);
@@ -266,9 +297,12 @@ export function extractFinancialRowsFromItems(items, page, indexOffset = 0) {
     );
     if (!labelItem) continue;
 
-    const headingLine = positioned.find(line =>
-      /\b(?:consolidated|group|company|parent company)\s+(?:statement of financial position|balance sheet)\b/i.test(line.text)
-    );
+    const headingPattern = row.section.includes("income statement")
+      ? /\bconsolidated\s+income\s+statement\b/i
+      : row.section.includes("cash flows")
+        ? /\bconsolidated\s+statement\s+of\s+cash\s+flows\b/i
+        : /\b(?:consolidated|group|company|parent company)\s+(?:statement of financial position|balance sheet)\b/i;
+    const headingLine = positioned.find(line => headingPattern.test(line.text));
     if (!headingLine || headingLine.y <= labelLine.y) continue;
 
     const headerItems = positioned
@@ -308,10 +342,16 @@ export function extractFinancialRowsFromItems(items, page, indexOffset = 0) {
     }
 
     const numericItems = labelLine.items.filter(item => {
-      if (item.x <= labelItem.x + labelItem.width) return false;
-      const value = item.text.replace(/\s+/g, "");
-      return /^(?:\(?-?\d[\d,]*(?:\.\d+)?\)?|[—–-])$/.test(value);
-    });
+  if (item.x <= labelItem.x + labelItem.width) return false;
+
+  const value = item.text.replace(/\s+/g, "");
+
+  if (!/^(?:\(?-?\d[\d,]*(?:\.\d+)?\)?|[—–-])$/.test(value)) {
+    return false;
+  }
+
+  return columns.some(column => Math.abs(item.x - column.x) <= 60);
+});
 
     const valueGroups = [];
     for (const item of numericItems) {
@@ -364,47 +404,74 @@ export function extractFinancialRowsFromItems(items, page, indexOffset = 0) {
 
 export function extractFinancialRows(pageText, page, indexOffset = 0) {
 const lines = String(pageText || "")
-.split(/\n+/)
-.map(cleanLine)
-.filter(Boolean);
+  .split(/\n+/)
+  .map(cleanLine)
+  .filter(Boolean);
 
 const section = classifyFinancialSection(lines.join("\n"));
+const rows = [];
+
+if (section === "Financial review") {
+  const headingIndex = lines.findIndex(line =>
+    /^net debt$/i.test(normalized(line))
+  );
+
+  if (headingIndex < 0) return [];
+
+  const rowIndex = lines.findIndex((line, index) =>
+    index > headingIndex &&
+    /^group net debt\s*(?:\(\s*\d|[-+]?\s*\d|[—–-])/i.test(line)
+  );
+
+  if (rowIndex < 0) return [];
+
+  const context = lines.slice(headingIndex + 1, rowIndex).join(" | ");
+  const row = lines[rowIndex];
+
+  return [{
+    id: `pdf-${page}-${indexOffset}`,
+    index: indexOffset,
+    label: "group net debt",
+    text: row,
+    page,
+    section,
+    periodContext: context
+  }];
+}
 
 if (!section.startsWith("Primary ")) return [];
 
-const headingPattern = section.includes("company")
-? /\b(?:company|parent company)\s+(?:statement of financial position|balance sheet)(?:\s+continued)?\b/i
-: /\b(?:consolidated|group)\s+(?:statement of financial position|balance sheet)(?:\s+continued)?\b/i;
+const headingPattern = section.includes("income statement")
+? /\bconsolidated\s+income\s+statement\b/i
+: section.includes("cash flows")
+  ? /\bconsolidated\s+statement\s+of\s+cash\s+flows\b/i
+  : section.includes("company")
+    ? /\b(?:company|parent company)\s+(?:statement of financial position|balance sheet)(?:\s+continued)?\b/i
+    : /\b(?:consolidated|group)\s+(?:statement of financial position|balance sheet)(?:\s+continued)?\b/i;
 
 const context = periodHeader(lines, headingPattern);
-const rows = [];
 
 for (const line of lines) {
-const lineText = normalized(line);
+  const lineText = normalized(line);
+  const label = FINANCIAL_LABELS.find(candidate =>
+    candidate !== "group net debt" &&
+    (lineText === candidate || lineText.startsWith(`${candidate} `))
+  );
+  if (!label) continue;
 
-const label = FINANCIAL_LABELS.find(candidate =>
-  lineText === candidate || lineText.startsWith(`${candidate} `)
-);
+  const remainder = lineText.slice(label.length);
+  if (!/[\d—–-]/.test(remainder)) continue;
 
-if (!label) continue;
-
-const remainder = lineText.slice(label.length);
-
-// Require a numeric or dash-like cell after the label.
-if (!/[\d—–-]/.test(remainder)) continue;
-
-const index = indexOffset + rows.length;
-
-rows.push({
-  id: `pdf-${page}-${index}`,
-  index,
-  label,
-  text: line,
-  page,
-  section,
-  periodContext: context
-});
-
+  const index = indexOffset + rows.length;
+  rows.push({
+    id: `pdf-${page}-${index}`,
+    index,
+    label,
+    text: line,
+    page,
+    section,
+    periodContext: context
+  });
 }
 
 return rows;
@@ -461,6 +528,44 @@ export function selectPrimaryFinancialEvidence(question, rows) {
 const label = requestedFinancialLabel(question);
 if (!label) return null;
 
+if (label === "group net debt") {
+  const year = requestedYear(question);
+  const candidates = (Array.isArray(rows) ? rows : [])
+    .filter(row => row.label === "group net debt" && row.section === "Financial review")
+    .sort((a, b) => a.page - b.page || a.index - b.index);
+
+  for (const row of candidates) {
+    const periods = periodsFromHeader(row.periodContext);
+    if (periods.length !== 2) continue;
+
+    const years = periods.map(period => period.match(/\b20\d{2}\b/)?.[0]);
+    if (years.some(value => !value) || (year && !years.includes(year))) continue;
+
+    const values = valuesFromRow(row);
+    // M&S table: two dated columns, then a separate Change column.
+    if (values.length !== 3) continue;
+
+    const valueIndex = year ? years.indexOf(year) : 0;
+    const raw = values[valueIndex];
+    if (!raw || /^[—–-]$/.test(raw)) continue;
+
+    const amount = raw.replace(/[()\s]/g, "");
+    if (!/^\d[\d,]*(?:\.\d+)?$/.test(amount)) continue;
+
+    const answer = /£m\b/i.test(row.periodContext)
+      ? `£${amount}m`
+      : amount;
+
+    return {
+      answer,
+      period: periods[valueIndex],
+      sourceQuote: row.text,
+      row
+    };
+  }
+  return null;
+}
+
 const candidates = (Array.isArray(rows) ? rows : [])
 .filter(row => row.label === label)
 .filter(row => row.section?.startsWith("Primary "));
@@ -471,7 +576,11 @@ const wantsCompany = /\b(?:company|parent company|parent entity)\b/i.test(questi
 
 const preferredSection = wantsCompany
 ? "Primary company statement of financial position"
-: "Primary consolidated statement of financial position";
+: ["revenue", "turnover", "operating profit", "profit before tax", "profit for the year", "total comprehensive income"].includes(label)
+  ? "Primary consolidated income statement"
+  : ["closing net cash", "equity dividends paid", "cash generated from operations", "net cash inflow from operating activities"].includes(label)
+    ? "Primary consolidated statement of cash flows"
+    : "Primary consolidated statement of financial position";
 
 const preferred = candidates.filter(row => row.section === preferredSection);
 let ranked = preferred.length ? preferred : candidates;

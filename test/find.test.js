@@ -37,12 +37,22 @@ function mockSupabase(url) {
   return null;
 }
 
+function mockEmbeddings(url, options) {
+  if (!String(url).includes("/v1/embeddings")) return null;
+  const { input } = JSON.parse(options.body);
+  return new Response(JSON.stringify({
+    data: input.map((_, index) => ({ index, embedding: [1, 0, 0] }))
+  }), { status: 200, headers: { "content-type": "application/json" } });
+}
+
 test("shortened model quote is rejected rather than returned as evidence", async () => {
   const originalFetch = globalThis.fetch;
   const source = "Cash and cash equivalents 18 864.5 1,022.4";
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, options) => {
     const supabase = mockSupabase(url);
     if (supabase) return supabase;
+    const embeddings = mockEmbeddings(url, options);
+    if (embeddings) return embeddings;
     return new Response(JSON.stringify({
     output_text: JSON.stringify({
       evidence: [{ block_index: 0, passage: "Cash and cash equivalents 18 864.5" }]
@@ -72,9 +82,11 @@ test("shortened model quote is rejected rather than returned as evidence", async
 
 test("unrelated searches return no deterministic evidence", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, options) => {
     const supabase = mockSupabase(url);
     if (supabase) return supabase;
+    const embeddings = mockEmbeddings(url, options);
+    if (embeddings) return embeddings;
     return new Response(JSON.stringify({
     output_text: JSON.stringify({ evidence: [] })
   }), { status: 200, headers: { "content-type": "application/json" } });
@@ -106,6 +118,8 @@ test("candidate text budget preserves a highly relevant passage late in a long d
   globalThis.fetch = async (_url, options) => {
     const supabase = mockSupabase(_url);
     if (supabase) return supabase;
+    const embeddings = mockEmbeddings(_url, options);
+    if (embeddings) return embeddings;
     const request = JSON.parse(options.body);
     submittedInput = JSON.stringify(request.input);
     return new Response(JSON.stringify({
@@ -151,9 +165,11 @@ test("candidate text budget preserves a highly relevant passage late in a long d
 test("an explicit section request never falls back to another section", async () => {
   const originalFetch = globalThis.fetch;
   let openAiCalled = false;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, options) => {
     const supabase = mockSupabase(url);
     if (supabase) return supabase;
+    const embeddings = mockEmbeddings(url, options);
+    if (embeddings) return embeddings;
     openAiCalled = true;
     return new Response(JSON.stringify({ output_text: JSON.stringify({ evidence: [] }) }), {
       status: 200, headers: { "content-type": "application/json" }
@@ -184,6 +200,8 @@ test("an explicit section request searches only matching section metadata", asyn
   globalThis.fetch = async (_url, options) => {
     const supabase = mockSupabase(_url);
     if (supabase) return supabase;
+    const embeddings = mockEmbeddings(_url, options);
+    if (embeddings) return embeddings;
     submittedInput = JSON.stringify(JSON.parse(options.body).input);
     return new Response(JSON.stringify({ output_text: JSON.stringify({ evidence: [] }) }), {
       status: 200, headers: { "content-type": "application/json" }
@@ -217,6 +235,8 @@ test("multilingual question terms retain Unicode words for candidate ranking", a
   globalThis.fetch = async (_url, options) => {
     const supabase = mockSupabase(_url);
     if (supabase) return supabase;
+    const embeddings = mockEmbeddings(_url, options);
+    if (embeddings) return embeddings;
     submittedInput = JSON.stringify(JSON.parse(options.body).input);
     return new Response(JSON.stringify({
       output_text: JSON.stringify({ evidence: [{ block_index: 0, passage: source }] })

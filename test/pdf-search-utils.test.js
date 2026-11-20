@@ -254,3 +254,62 @@ test("maps interleaved M&S 2026 statement headers to the correct cash values", (
     null
   );
 });
+
+test("extracts M&S Group net debt for FY2026 and FY2025 without using the Change column", () => {
+  const rows = extractFinancialRows([
+    "FINANCIAL REVIEW",
+    "Net debt",
+    "Group net debt increased £632.0m since last year primarily driven by the increase in lease liabilities.",
+    "52 weeks ended",
+    "28 Mar 26",
+    "£m",
+    "29 Mar 25",
+    "£m",
+    "Change vs",
+    "2024/25",
+    "£m",
+    "Group net debt(2,411.8)(1,779.8)(632.0)"
+  ].join("\n"), 117);
+
+  assert.equal(rows.length, 1);
+
+  const current = selectPrimaryFinancialEvidence(
+    "What was Group net debt in FY2026?", rows
+  );
+  assert.equal(current?.answer, "£2,411.8m");
+  assert.equal(current?.period, "28 March 2026");
+  assert.equal(current?.row.page, 117);
+  assert.equal(current?.sourceQuote, "Group net debt(2,411.8)(1,779.8)(632.0)");
+
+  const comparative = selectPrimaryFinancialEvidence(
+    "What was Group net debt in FY2025?", rows
+  );
+  assert.equal(comparative?.answer, "£1,779.8m");
+  assert.equal(comparative?.period, "29 March 2025");
+
+  assert.equal(
+    selectPrimaryFinancialEvidence("What was Group net debt in FY2024?", rows),
+    null
+  );
+});
+
+test("does not shortcut explanatory Group net debt questions to a financial row", () => {
+  const rows = extractFinancialRows([
+    "FINANCIAL REVIEW",
+    "Net debt",
+    "52 weeks ended",
+    "28 Mar 26",
+    "£m",
+    "29 Mar 25",
+    "£m",
+    "Change vs",
+    "2024/25",
+    "£m",
+    "Group net debt(2,411.8)(1,779.8)(632.0)"
+  ].join("\n"), 117);
+
+  assert.equal(
+    selectPrimaryFinancialEvidence("Why did Group net debt increase?", rows),
+    null
+  );
+});

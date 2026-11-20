@@ -51,7 +51,7 @@ async function getSemanticScores(question, items) {
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ALLOWED_ORIGIN = "*";
-const DEFAULT_OPENAI_TIMEOUT_MS = 15000;
+const DEFAULT_OPENAI_TIMEOUT_MS = 60000;
 const configuredOpenAiTimeout = Number(process.env.SNIP_OPENAI_TIMEOUT_MS);
 const OPENAI_TIMEOUT_MS = Number.isFinite(configuredOpenAiTimeout) && configuredOpenAiTimeout >= 10
   ? Math.min(configuredOpenAiTimeout, DEFAULT_OPENAI_TIMEOUT_MS)

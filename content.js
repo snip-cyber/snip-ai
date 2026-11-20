@@ -9,9 +9,17 @@
     const existing = document.getElementById(ROOT_ID);
     existing?.__cleanupPlanSync?.();
     existing?.remove();
+    activeRoot = null;
   }
 
   function openPrompt() {
+    const existing = document.getElementById(ROOT_ID);
+    if (existing?.isConnected) {
+      activeRoot = existing.shadowRoot;
+      existing.shadowRoot?.querySelector(".snip-input")?.focus();
+      return;
+    }
+
     removeRoot();
 
     const host = document.createElement("div");
